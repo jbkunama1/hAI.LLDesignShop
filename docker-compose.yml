@@ -1,0 +1,87 @@
+version: "3.9"
+
+# hAI.LLDesignShop
+# Kombiniertes Setup: EverShop (Webshop, TypeScript/GraphQL) + Telegram-Shop-Bot (Python/aiogram)
+# Beide teilen sich perspektivisch dieselbe Produktdatenbank via EverShop GraphQL-API.
+#
+# Start:  docker compose up -d
+# Stop:   docker compose down
+# Logs:   docker compose logs -f
+
+services:
+
+  # ---------------------------------------------------------------------
+  # EverShop – Haupt-Webshop (Node/TypeScript, GraphQL, React-Frontend)
+  # https://github.com/evershopcommerce/evershop
+  # ---------------------------------------------------------------------
+  evershop:
+    image: evershop/evershop:latest
+    container_name: evershop
+    restart: unless-stopped
+    ports:
+      - "${EVERSHOP_PORT:-3000}:3000"
+    environment:
+      DB_HOST: evershop_db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-evershop}
+      DB_USER: ${POSTGRES_USER:-evershop}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme_evershop_db}
+      SESSION_SECRET: ${SESSION_SECRET:-changeme_session_secret}
+    depends_on:
+      evershop_db:
+        condition: service_healthy
+    volumes:
+      - evershop_media:/evershop/media
+    networks:
+      - shopnet
+
+  evershop_db:
+    image: postgres:15-alpine
+    container_name: evershop_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-evershop}
+      POSTGRES_USER: ${POSTGRES_USER:-evershop}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_evershop_db}
+    volumes:
+      - evershop_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-evershop}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - shopnet
+
+  # ---------------------------------------------------------------------
+  # Telegram-Shop-Bot – eigener kleiner Bot fuer Direktverkauf im Chat
+  # Basis: Python/aiogram, eigenes Dockerfile in ./telegram-bot
+  # Kann Produkte spaeter per EverShop-GraphQL-API spiegeln (siehe README)
+  # ---------------------------------------------------------------------
+  telegram-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    container_name: telegram-shop-bot
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID}
+      DATABASE_URL: sqlite:////data/shop.db
+      EVERSHOP_GRAPHQL_URL: http://evershop:3000/graphql
+      CURRENCY: ${SHOP_CURRENCY:-EUR}
+    volumes:
+      - telegram_bot_data:/data
+    depends_on:
+      - evershop
+    networks:
+      - shopnet
+
+networks:
+  shopnet:
+    driver: bridge
+
+volumes:
+  evershop_media:
+  evershop_db_data:
+  telegram_bot_data:
