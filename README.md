@@ -1,5 +1,8 @@
 # hAI.LLDesignShop
 
+![TruffleHog](https://img.shields.io/badge/security-TruffleHog-blue)
+![Docker Build](https://img.shields.io/badge/docker-automated-blue)
+
 Kombiniertes Self-Hosting-Setup für einen unabhängigen Webshop als Etsy-Ersatz:
 
 - **EverShop** – vollwertiger Webshop (TypeScript/Node, GraphQL-API, React-Frontend, PostgreSQL) für bis zu ca. 50 Artikel

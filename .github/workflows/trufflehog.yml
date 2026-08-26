@@ -1,4 +1,4 @@
-name: Secret Scan
+name: TruffleHog Secret Scanning
 
 on:
   push:
@@ -21,3 +21,4 @@ jobs:
           path: ./
           base: ""
           head: ${{ github.ref_name }}
+
