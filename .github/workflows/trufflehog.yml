@@ -2,17 +2,23 @@ name: TruffleHog Secret Scanning
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
 
 jobs:
   trufflehog:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Run TruffleHog
-        uses: trufflehog/trufflehog@v2
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          path: .
-          config_path: /dev/null
+          fetch-depth: 0
+
+      - name: TruffleHog OSS
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ""
+          head: ${{ github.ref_name }}
+
