@@ -1,6 +1,6 @@
 """
 hAI.LLDesignShop - Telegram Shop Bot
-Minimalistisches Grundgeruest fuer bis zu 50 Artikel.
+Shop: LauraLieDesign - handgefertigte Stoff-Schultueten
 Katalog liegt lokal in SQLite, optional Abgleich mit EverShop via GraphQL (siehe sync_evershop.py).
 
 Ablauf:
@@ -39,17 +39,21 @@ CURRENCY = os.getenv("CURRENCY", "EUR")
 
 router = Router()
 
+# Shop-Texte fuer LauraLieDesign - siehe auch SHOP_TEXTS.md fuer weitere Varianten
+WELCOME_TEXT = (
+    "Willkommen bei LauraLieDesign! \U0001F392\u2728\n\n"
+    "Handgefertigte Stoff-Schultueten mit viel Liebe zum Detail - fuer den schoensten ersten "
+    "Schultag. Jedes Motiv wird einzeln genaeht, ganz nach den Wuenschen eures Kindes.\n\n"
+    "Befehle:\n"
+    "/shop - Unsere Schultueten ansehen\n"
+    "/cart - Warenkorb anzeigen\n"
+    "/checkout - Bestellung abschliessen"
+)
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    text = (
-        "Willkommen im Shop! \U0001F6CD\uFE0F\n\n"
-        "Befehle:\n"
-        "/shop - Produkte ansehen\n"
-        "/cart - Warenkorb anzeigen\n"
-        "/checkout - Bestellung abschliessen"
-    )
-    await message.answer(text)
+    await message.answer(WELCOME_TEXT)
 
 
 @router.message(Command("shop"))
