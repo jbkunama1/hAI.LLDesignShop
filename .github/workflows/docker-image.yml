@@ -22,8 +22,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/push-action@v5
+        uses: docker/build-push-action@v5
         with:
           context: ./telegram-bot
           file: telegram-bot/Dockerfile
+          push: true
           tags: ghcr.io/jbkunama1/hai.lldesignshop/telegram-bot:latest
