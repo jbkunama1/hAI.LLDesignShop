@@ -11,11 +11,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, select
 
-raw_db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////data/shop.db")
-if raw_db_url.startswith("sqlite://") and not raw_db_url.startswith("sqlite+"):
-    DATABASE_URL = raw_db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
-else:
-    DATABASE_URL = raw_db_url
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////data/shop.db")
 
 Base = declarative_base()
 engine = create_async_engine(DATABASE_URL, echo=False)
@@ -55,8 +51,9 @@ async def init_db():
         result = await session.execute(select(Product))
         if not result.scalars().first():
             demo_products = [
-                Product(name="Beispiel-Artikel 1", description="Beschreibung hier einfuegen", price=19.90, stock=10),
-                Product(name="Beispiel-Artikel 2", description="Beschreibung hier einfuegen", price=24.90, stock=5),
+                Product(name="Stoff-Schultuete Ninja", description="Beige mit Bausteinen-Motiv", price=34.90, stock=5),
+                Product(name="Stoff-Schultuete Einhorn", description="Pinke Sterne, funkelnd", price=34.90, stock=5),
+                Product(name="Stoff-Schultuete Dino", description="Mit Kopfhoerern, kindgerecht", price=34.90, stock=5),
             ]
             session.add_all(demo_products)
             await session.commit()
@@ -75,6 +72,7 @@ async def get_product(product_id: int) -> Optional[Product]:
 
 
 async def add_to_cart(telegram_user_id: int, product_id: int, quantity: int = 1):
+    """Erhoeht/verringert die Menge im Warenkorb. Bei quantity <= 0 wird der Eintrag entfernt."""
     async with async_session() as session:
         result = await session.execute(
             select(CartItem).where(
@@ -85,9 +83,12 @@ async def add_to_cart(telegram_user_id: int, product_id: int, quantity: int = 1)
         item = result.scalar_one_or_none()
         if item:
             item.quantity += quantity
+            if item.quantity <= 0:
+                await session.delete(item)
         else:
-            item = CartItem(telegram_user_id=telegram_user_id, product_id=product_id, quantity=quantity)
-            session.add(item)
+            if quantity > 0:
+                item = CartItem(telegram_user_id=telegram_user_id, product_id=product_id, quantity=quantity)
+                session.add(item)
         await session.commit()
 
 
