@@ -16,15 +16,16 @@ Plausibilitaetspruefungen bei der Bestellung:
   - Einfaches Rate-Limiting gegen Spam-Klicks (siehe RateLimitMiddleware)
   - Eindeutige Bestellnummer pro Bestellung (Format LLD-JJMMTT-XXXX)
 
-Kontaktdaten-Flow (neu):
+Kontaktdaten-Flow:
   - Vor dem finalen Checkout fragt der Bot Name und E-Mail ab (Pflicht) sowie
     optional eine Telefonnummer (ueberspringbar).
-  - Daten werden pro Telegram-User-ID gespeichert (siehe db.py: Customer), damit
-    wiederkehrende Kunden sie nur einmal eingeben muessen und beim naechsten Mal
-    nur noch bestaetigen.
+  - Datenschutz: Nach der Eingabe fragt der Bot explizit, ob die Kontaktdaten fuer
+    kuenftige Bestellungen gespeichert werden duerfen (DSGVO-Einwilligung).
+    Bei "Nein" werden die Daten nur fuer diese eine Bestellung verwendet und NICHT
+    in der Customer-Tabelle abgelegt - der Kunde muss sie beim naechsten Mal erneut
+    eingeben. Bei "Ja" merkt sich der Bot die Daten fuer naechste Bestellungen.
   - Der Kunde kann sofort durchbestellen, der Admin bekommt eine Benachrichtigung
-    mit "Annehmen" / "Ablehnen" - das ist nicht zeitkritisch fuer den Kaufabschluss,
-    sondern dient der nachtraeglichen Bearbeitung durch den Shop-Betreiber.
+    mit "Annehmen" / "Ablehnen" - nicht zeitkritisch, dient der Nachbearbeitung.
 
 Fuer Zahlungen: Platzhalter-Flow ueber manuelle Bestaetigung (Ueberweisung/PayPal-Link).
 Fuer Telegram Payments API / Stripe siehe README.md Abschnitt "Zahlungen".
@@ -83,6 +84,7 @@ class CheckoutStates(StatesGroup):
     waiting_name = State()
     waiting_email = State()
     waiting_phone = State()
+    waiting_consent = State()
     confirm = State()
 
 
@@ -102,6 +104,14 @@ ABOUT_TEXT = (
     "Stoff-Schult\u00fcten (Zuckert\u00fcten) f\u00fcr kleine Schulanf\u00e4nger:innen \u2013 "
     "liebevoll gen\u00e4ht und individuell auf die W\u00fcnsche eures Kindes abgestimmt.\n\n"
     "\U0001F1E9\U0001F1EA Handgefertigt und versendet aus Deutschland."
+)
+
+CONSENT_TEXT = (
+    "\U0001F512 <b>Datenspeicherung</b>\n\n"
+    "D\u00fcrfen wir deinen Namen, deine E-Mail-Adresse und ggf. Telefonnummer speichern, "
+    "damit du sie bei deiner n\u00e4chsten Bestellung nicht erneut eingeben musst?\n\n"
+    "Falls nicht, verwenden wir die Daten nur f\u00fcr diese eine Bestellung und legen "
+    "sie nicht dauerhaft ab."
 )
 
 
@@ -190,6 +200,17 @@ def skip_phone_kb() -> InlineKeyboardMarkup:
     )
 
 
+def consent_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="\u2705 Ja, speichern", callback_data="consent:yes"),
+                InlineKeyboardButton(text="\u274c Nein, nur diese Bestellung", callback_data="consent:no"),
+            ]
+        ]
+    )
+
+
 def checkout_confirm_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -230,13 +251,20 @@ async def render_cart_text(user_id: int) -> tuple[str, list]:
     return "\n".join(lines), items
 
 
-def render_contact_summary(name: str, email: str, phone) -> str:
+def render_contact_summary(name: str, email: str, phone, save_consent) -> str:
     phone_line = phone if phone else "<i>nicht angegeben</i>"
+    if save_consent is True:
+        consent_line = "\U0001F513 Daten werden f\u00fcr n\u00e4chstes Mal gespeichert"
+    elif save_consent is False:
+        consent_line = "\U0001F512 Daten werden nicht gespeichert (nur diese Bestellung)"
+    else:
+        consent_line = ""
     return (
         f"\U0001F464 <b>Deine Kontaktdaten</b>\n\n"
         f"Name: {name}\n"
         f"E-Mail: {email}\n"
-        f"Telefon: {phone_line}"
+        f"Telefon: {phone_line}\n"
+        f"{consent_line}"
     )
 
 
@@ -371,7 +399,7 @@ async def cb_menu_about(callback: CallbackQuery):
 
 
 # ---------------------------------------------------------------------
-# Checkout: Start -> Lagerpruefung -> Kontaktdaten-Flow -> Bestaetigung
+# Checkout: Start -> Lagerpruefung -> Kontaktdaten -> Speicher-Einwilligung -> Bestaetigung
 # ---------------------------------------------------------------------
 async def start_checkout(callback_or_message, user_id: int, state: FSMContext, is_callback: bool):
     try:
@@ -389,10 +417,13 @@ async def start_checkout(callback_or_message, user_id: int, state: FSMContext, i
     target_message = callback_or_message.message if is_callback else callback_or_message
 
     if existing_customer:
+        # Bekannter Kunde, der frueher der Speicherung zugestimmt hat:
+        # Daten anzeigen und direkt zur Bestaetigung springen.
         await state.update_data(
             name=existing_customer.name,
             email=existing_customer.email,
             phone=existing_customer.phone,
+            save_consent=True,
         )
         await show_checkout_confirm(target_message, user_id, state, edit=is_callback)
     else:
@@ -450,17 +481,39 @@ async def process_email(message: Message, state: FSMContext):
     )
 
 
+async def ask_for_consent(message: Message, edit: bool, state: FSMContext):
+    await state.set_state(CheckoutStates.waiting_consent)
+    if edit:
+        await message.edit_text(CONSENT_TEXT, reply_markup=consent_kb(), parse_mode="HTML")
+    else:
+        await message.answer(CONSENT_TEXT, reply_markup=consent_kb(), parse_mode="HTML")
+
+
 @router.message(StateFilter(CheckoutStates.waiting_phone))
 async def process_phone(message: Message, state: FSMContext):
     phone = message.text.strip()
     await state.update_data(phone=phone)
-    await show_checkout_confirm(message, message.from_user.id, state, edit=False)
+    await ask_for_consent(message, edit=False, state=state)
 
 
 @router.callback_query(F.data == "phone:skip", StateFilter(CheckoutStates.waiting_phone))
 async def skip_phone(callback: CallbackQuery, state: FSMContext):
     await state.update_data(phone=None)
     await callback.answer()
+    await ask_for_consent(callback.message, edit=True, state=state)
+
+
+@router.callback_query(F.data == "consent:yes", StateFilter(CheckoutStates.waiting_consent))
+async def consent_yes(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(save_consent=True)
+    await callback.answer("Alles klar, wir merken uns deine Daten \U0001F513")
+    await show_checkout_confirm(callback.message, callback.from_user.id, state, edit=True)
+
+
+@router.callback_query(F.data == "consent:no", StateFilter(CheckoutStates.waiting_consent))
+async def consent_no(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(save_consent=False)
+    await callback.answer("Verstanden, nur f\u00fcr diese Bestellung \U0001F512")
     await show_checkout_confirm(callback.message, callback.from_user.id, state, edit=True)
 
 
@@ -474,7 +527,12 @@ async def show_checkout_confirm(message: Message, user_id: int, state: FSMContex
         text = "Dein Warenkorb ist leer."
         kb = back_to_menu_kb()
     else:
-        contact_text = render_contact_summary(data.get("name", "-"), data.get("email", "-"), data.get("phone"))
+        contact_text = render_contact_summary(
+            data.get("name", "-"),
+            data.get("email", "-"),
+            data.get("phone"),
+            data.get("save_consent"),
+        )
         text = f"{cart_text}\n\n{contact_text}\n\nBestellung jetzt verbindlich abschicken?"
         kb = checkout_confirm_kb()
 
@@ -498,13 +556,15 @@ async def cb_checkout_confirm(callback: CallbackQuery, state: FSMContext):
         name = data.get("name")
         email = data.get("email")
         phone = data.get("phone")
+        save_consent = data.get("save_consent", False)
 
         if not name or not email:
             await callback.answer("Kontaktdaten unvollst\u00e4ndig. Bitte erneut starten.", show_alert=True)
             await state.clear()
             return
 
-        await save_customer(user_id, name, email, phone)
+        if save_consent:
+            await save_customer(user_id, name, email, phone)
 
         class _CustomerSnapshot:
             pass
@@ -528,11 +588,13 @@ async def cb_checkout_confirm(callback: CallbackQuery, state: FSMContext):
 
         user = callback.from_user
         phone_line = phone if phone else "nicht angegeben"
+        consent_line = "gespeichert" if save_consent else "nicht gespeichert (nur diese Bestellung)"
         admin_text = (
             f"\U0001F4E6 Neue Bestellung {order['order_number']}\n"
             f"von @{user.username or user.id}\n\n"
             f"{order['summary']}\n\nGesamt: {order['total']:.2f} {CURRENCY}\n\n"
-            f"\U0001F464 Name: {name}\n\U0001F4E7 E-Mail: {email}\n\U0001F4DE Telefon: {phone_line}\n\n"
+            f"\U0001F464 Name: {name}\n\U0001F4E7 E-Mail: {email}\n\U0001F4DE Telefon: {phone_line}\n"
+            f"\U0001F512 Kontaktdaten: {consent_line}\n\n"
             f"Status: offen \u2013 bitte annehmen oder ablehnen:"
         )
         if ADMIN_CHAT_ID:
