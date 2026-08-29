@@ -9,6 +9,13 @@ Bedienung ueber Inline-Menues (Buttons direkt in der Nachricht), komplett auf De
   /cart         -> identisch zu Button "Warenkorb" im Hauptmenue
   /checkout     -> identisch zu Button "Zur Kasse" im Warenkorb
 
+Plausibilitaetspruefungen bei der Bestellung:
+  - Lagerbestand wird vor dem finalen Abschicken erneut geprueft (Race-Condition-Schutz)
+  - Maximalmenge pro Artikel begrenzt (siehe db.py: MAX_QTY_PER_ITEM, Standard 5)
+  - Anti-Doppelklick-Schutz: pro Nutzer nur eine Bestellung gleichzeitig in Bearbeitung
+  - Einfaches Rate-Limiting gegen Spam-Klicks (siehe RateLimitMiddleware)
+  - Eindeutige Bestellnummer pro Bestellung (Format LLD-JJMMTT-XXXX)
+
 Fuer Zahlungen: Platzhalter-Flow ueber manuelle Bestaetigung (Ueberweisung/PayPal-Link).
 Fuer Telegram Payments API / Stripe siehe README.md Abschnitt "Zahlungen".
 """
@@ -16,18 +23,32 @@ Fuer Telegram Payments API / Stripe siehe README.md Abschnitt "Zahlungen".
 import asyncio
 import logging
 import os
+import time
+from typing import Any, Awaitable, Callable, Dict
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message,
     CallbackQuery,
+    TelegramObject,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from db import init_db, get_products, get_product, add_to_cart, get_cart, clear_cart
+from db import (
+    init_db,
+    get_products,
+    get_product,
+    add_to_cart,
+    get_cart,
+    clear_cart,
+    validate_cart_stock,
+    finalize_order,
+    InsufficientStockError,
+    MAX_QTY_PER_ITEM,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,6 +56,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 CURRENCY = os.getenv("CURRENCY", "EUR")
+RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "0.6"))
 
 router = Router()
 
@@ -55,6 +77,42 @@ ABOUT_TEXT = (
     "liebevoll gen\u00e4ht und individuell auf die W\u00fcnsche eures Kindes abgestimmt.\n\n"
     "\U0001F1E9\U0001F1EA Handgefertigt und versendet aus Deutschland."
 )
+
+
+# ---------------------------------------------------------------------
+# Anti-Spam / Rate-Limiting Middleware
+# Verhindert, dass ein Nutzer den Bot durch schnelles Klicken/Senden flutet.
+# Telegram selbst erlaubt ohnehin nur ca. 1 Nachricht/Sekunde pro Chat,
+# ohne Schutz laeuft der Bot sonst schnell in API-Rate-Limits.
+# ---------------------------------------------------------------------
+class RateLimitMiddleware(BaseMiddleware):
+    def __init__(self, limit_seconds: float = 0.6):
+        self.limit_seconds = limit_seconds
+        self._last_action: Dict[int, float] = {}
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any],
+    ) -> Any:
+        user = data.get("event_from_user")
+        if user is not None:
+            now = time.monotonic()
+            last = self._last_action.get(user.id, 0)
+            if now - last < self.limit_seconds:
+                if isinstance(event, CallbackQuery):
+                    await event.answer("Bitte einen Moment warten \u23f3", show_alert=False)
+                return None
+            self._last_action[user.id] = now
+        return await handler(event, data)
+
+
+# ---------------------------------------------------------------------
+# Anti-Doppelklick-Schutz beim Checkout:
+# pro Nutzer darf immer nur eine Bestellung gleichzeitig verarbeitet werden.
+# ---------------------------------------------------------------------
+_checkout_locks: Dict[int, bool] = {}
 
 
 # ---------------------------------------------------------------------
@@ -93,9 +151,9 @@ def cart_kb(items) -> InlineKeyboardMarkup:
     rows = []
     for item in items:
         rows.append([
-            InlineKeyboardButton(text=f"\u2795", callback_data=f"inc:{item.product.id}"),
+            InlineKeyboardButton(text="\u2795", callback_data=f"inc:{item.product.id}"),
             InlineKeyboardButton(text=f"{item.product.name} ({item.quantity}x)", callback_data="noop"),
-            InlineKeyboardButton(text=f"\u2796", callback_data=f"dec:{item.product.id}"),
+            InlineKeyboardButton(text="\u2796", callback_data=f"dec:{item.product.id}"),
         ])
     if items:
         rows.append([InlineKeyboardButton(text="\u2705 Zur Kasse", callback_data="menu:checkout")])
@@ -128,6 +186,7 @@ async def render_cart_text(user_id: int) -> tuple[str, list]:
         total += subtotal
         lines.append(f"{item.quantity}x {item.product.name} \u2013 {subtotal:.2f} {CURRENCY}")
     lines.append(f"\n<b>Gesamt: {total:.2f} {CURRENCY}</b>")
+    lines.append(f"\n<i>Maximal {MAX_QTY_PER_ITEM} St\u00fcck pro Artikel, je nach Lagerbestand.</i>")
     return "\n".join(lines), items
 
 
@@ -211,17 +270,27 @@ async def cb_noop(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("add:"))
 async def cb_add_to_cart(callback: CallbackQuery):
     product_id = int(callback.data.split(":")[1])
-    await add_to_cart(callback.from_user.id, product_id, quantity=1)
     product = await get_product(product_id)
-    await callback.answer(f"{product.name} wurde hinzugef\u00fcgt \u2705")
+    if not product:
+        await callback.answer("Artikel nicht gefunden.", show_alert=True)
+        return
+
+    new_qty = await add_to_cart(callback.from_user.id, product_id, quantity=1)
+    if new_qty == 0:
+        await callback.answer("Dieser Artikel ist leider ausverkauft \U0001F625", show_alert=True)
+    else:
+        await callback.answer(f"{product.name} wurde hinzugef\u00fcgt \u2705 ({new_qty}x im Warenkorb)")
 
 
 @router.callback_query(F.data.startswith("inc:"))
 async def cb_cart_increase(callback: CallbackQuery):
     product_id = int(callback.data.split(":")[1])
-    await add_to_cart(callback.from_user.id, product_id, quantity=1)
+    new_qty = await add_to_cart(callback.from_user.id, product_id, quantity=1)
     await show_cart(callback.message, callback.from_user.id, edit=True)
-    await callback.answer()
+    if new_qty >= MAX_QTY_PER_ITEM:
+        await callback.answer(f"Maximal {MAX_QTY_PER_ITEM} St\u00fcck pro Artikel \u2139\ufe0f")
+    else:
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith("dec:"))
@@ -249,7 +318,7 @@ async def cb_menu_about(callback: CallbackQuery):
 
 
 # ---------------------------------------------------------------------
-# Checkout mit Bestaetigung
+# Checkout mit Bestaetigung + Plausibilitaetspruefung
 # ---------------------------------------------------------------------
 async def show_checkout_confirm(message: Message, user_id: int, edit: bool = False):
     text, items = await render_cart_text(user_id)
@@ -272,6 +341,17 @@ async def cmd_checkout(message: Message):
 
 @router.callback_query(F.data == "menu:checkout")
 async def cb_menu_checkout(callback: CallbackQuery):
+    # Plausibilitaetspruefung: reicht der Lagerbestand noch fuer alle Positionen?
+    try:
+        await validate_cart_stock(callback.from_user.id)
+    except InsufficientStockError as exc:
+        await callback.answer(
+            f"Nur noch {exc.available}x '{exc.product_name}' verf\u00fcgbar. Bitte Menge anpassen.",
+            show_alert=True,
+        )
+        await show_cart(callback.message, callback.from_user.id, edit=True)
+        return
+
     await show_checkout_confirm(callback.message, callback.from_user.id, edit=True)
     await callback.answer()
 
@@ -279,30 +359,48 @@ async def cb_menu_checkout(callback: CallbackQuery):
 @router.callback_query(F.data == "checkout:confirm")
 async def cb_checkout_confirm(callback: CallbackQuery):
     user_id = callback.from_user.id
-    items = await get_cart(user_id)
-    if not items:
-        await callback.answer("Dein Warenkorb ist leer.", show_alert=True)
+
+    # Anti-Doppelklick-Schutz: pro Nutzer nur eine Bestellung gleichzeitig
+    if _checkout_locks.get(user_id):
+        await callback.answer("Deine Bestellung wird bereits verarbeitet \u23f3", show_alert=True)
         return
+    _checkout_locks[user_id] = True
 
-    total = sum(item.product.price * item.quantity for item in items)
-    order_summary = "\n".join(f"{item.quantity}x {item.product.name}" for item in items)
+    try:
+        # Erneute Lagerbestand-Pruefung direkt vor dem Abschluss (Race-Condition-Schutz,
+        # falls zwischenzeitlich ein anderer Kunde denselben Artikel bestellt hat)
+        order = await finalize_order(user_id)
 
-    user = callback.from_user
-    admin_text = (
-        f"\U0001F4E6 Neue Bestellung von @{user.username or user.id}\n\n"
-        f"{order_summary}\n\nGesamt: {total:.2f} {CURRENCY}"
-    )
-    if ADMIN_CHAT_ID:
-        await callback.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text)
+        if order is None:
+            await callback.answer(
+                "Leider ist ein Artikel aus deinem Warenkorb nicht mehr in ausreichender "
+                "St\u00fcckzahl verf\u00fcgbar. Bitte Warenkorb pr\u00fcfen.",
+                show_alert=True,
+            )
+            await show_cart(callback.message, user_id, edit=True)
+            return
 
-    await clear_cart(user_id)
-    await callback.message.edit_text(
-        "Danke f\u00fcr deine Bestellung! \u2705\n\n"
-        "Wir melden uns in K\u00fcrze mit den Zahlungsdetails "
-        "(z.B. PayPal-Link oder \u00dcberweisungsdaten).",
-        reply_markup=back_to_menu_kb(),
-    )
-    await callback.answer("Bestellung abgeschickt \U0001F389")
+        user = callback.from_user
+        admin_text = (
+            f"\U0001F4E6 Neue Bestellung {order['order_number']}\n"
+            f"von @{user.username or user.id}\n\n"
+            f"{order['summary']}\n\nGesamt: {order['total']:.2f} {CURRENCY}"
+        )
+        if ADMIN_CHAT_ID:
+            await callback.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text)
+
+        await callback.message.edit_text(
+            f"Danke f\u00fcr deine Bestellung! \u2705\n\n"
+            f"Deine Bestellnummer: <b>{order['order_number']}</b>\n\n"
+            f"Wir melden uns in K\u00fcrze mit den Zahlungsdetails "
+            f"(z.B. PayPal-Link oder \u00dcberweisungsdaten). Bitte gib bei R\u00fcckfragen "
+            f"die Bestellnummer an.",
+            reply_markup=back_to_menu_kb(),
+            parse_mode="HTML",
+        )
+        await callback.answer("Bestellung abgeschickt \U0001F389")
+    finally:
+        _checkout_locks.pop(user_id, None)
 
 
 # ---------------------------------------------------------------------
@@ -316,6 +414,8 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
+    dp.message.middleware(RateLimitMiddleware(RATE_LIMIT_SECONDS))
+    dp.callback_query.middleware(RateLimitMiddleware(RATE_LIMIT_SECONDS))
     dp.include_router(router)
 
     logger.info("Bot startet...")

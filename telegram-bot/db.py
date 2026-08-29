@@ -4,14 +4,18 @@ Fuer bis zu 50 Artikel voellig ausreichend, kein separater DB-Server noetig.
 """
 
 import os
+import random
+import string
 from dataclasses import dataclass
+from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, select
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, select
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////data/shop.db")
+MAX_QTY_PER_ITEM = int(os.getenv("MAX_QTY_PER_ITEM", "5"))
 
 Base = declarative_base()
 engine = create_async_engine(DATABASE_URL, echo=False)
@@ -36,10 +40,28 @@ class CartItem(Base):
     quantity = Column(Integer, default=1)
 
 
+class Order(Base):
+    __tablename__ = "orders"
+    id = Column(Integer, primary_key=True)
+    order_number = Column(String, unique=True, nullable=False)
+    telegram_user_id = Column(Integer, nullable=False)
+    total = Column(Float, nullable=False)
+    summary = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 @dataclass
 class CartItemView:
     product: Product
     quantity: int
+
+
+class InsufficientStockError(Exception):
+    """Wird ausgeloest, wenn nicht genug Lagerbestand fuer eine Bestellung vorhanden ist."""
+    def __init__(self, product_name: str, available: int):
+        self.product_name = product_name
+        self.available = available
+        super().__init__(f"Nicht genug Lagerbestand fuer {product_name}: nur noch {available} verfuegbar")
 
 
 async def init_db():
@@ -71,9 +93,18 @@ async def get_product(product_id: int) -> Optional[Product]:
         return result.scalar_one_or_none()
 
 
-async def add_to_cart(telegram_user_id: int, product_id: int, quantity: int = 1):
-    """Erhoeht/verringert die Menge im Warenkorb. Bei quantity <= 0 wird der Eintrag entfernt."""
+async def add_to_cart(telegram_user_id: int, product_id: int, quantity: int = 1) -> int:
+    """
+    Erhoeht/verringert die Menge im Warenkorb. Bei quantity <= 0 wird der Eintrag entfernt.
+    Menge wird auf MAX_QTY_PER_ITEM und den aktuellen Lagerbestand begrenzt (Plausibilitaetspruefung).
+    Gibt die tatsaechlich resultierende Menge zurueck.
+    """
     async with async_session() as session:
+        product_result = await session.execute(select(Product).where(Product.id == product_id))
+        product = product_result.scalar_one_or_none()
+        if not product:
+            return 0
+
         result = await session.execute(
             select(CartItem).where(
                 CartItem.telegram_user_id == telegram_user_id,
@@ -81,15 +112,24 @@ async def add_to_cart(telegram_user_id: int, product_id: int, quantity: int = 1)
             )
         )
         item = result.scalar_one_or_none()
-        if item:
-            item.quantity += quantity
-            if item.quantity <= 0:
+        current_qty = item.quantity if item else 0
+        new_qty = current_qty + quantity
+
+        # Plausibilitaetsgrenzen: nicht unter 0, nicht ueber Max-Limit, nicht ueber Lagerbestand
+        upper_limit = min(MAX_QTY_PER_ITEM, product.stock)
+        new_qty = max(0, min(new_qty, upper_limit))
+
+        if new_qty <= 0:
+            if item:
                 await session.delete(item)
+        elif item:
+            item.quantity = new_qty
         else:
-            if quantity > 0:
-                item = CartItem(telegram_user_id=telegram_user_id, product_id=product_id, quantity=quantity)
-                session.add(item)
+            item = CartItem(telegram_user_id=telegram_user_id, product_id=product_id, quantity=new_qty)
+            session.add(item)
+
         await session.commit()
+        return new_qty
 
 
 async def get_cart(telegram_user_id: int) -> List[CartItemView]:
@@ -114,3 +154,78 @@ async def clear_cart(telegram_user_id: int):
         for item in result.scalars().all():
             await session.delete(item)
         await session.commit()
+
+
+def _generate_order_number() -> str:
+    date_part = datetime.utcnow().strftime("%y%m%d")
+    rand_part = "".join(random.choices(string.digits, k=4))
+    return f"LLD-{date_part}-{rand_part}"
+
+
+async def validate_cart_stock(telegram_user_id: int) -> None:
+    """
+    Prueft vor dem Checkout, ob fuer alle Positionen im Warenkorb noch genug
+    Lagerbestand vorhanden ist. Wirft InsufficientStockError, falls nicht.
+    Wichtig bei handgefertigten Unikaten mit knappem Lagerbestand.
+    """
+    items = await get_cart(telegram_user_id)
+    for item in items:
+        current_product = await get_product(item.product.id)
+        if not current_product or current_product.stock < item.quantity:
+            available = current_product.stock if current_product else 0
+            raise InsufficientStockError(item.product.name, available)
+
+
+async def finalize_order(telegram_user_id: int) -> Optional[dict]:
+    """
+    Schliesst eine Bestellung verbindlich ab:
+    - prueft Lagerbestand erneut (Race-Condition-Schutz bei parallelen Bestellungen)
+    - reduziert den Lagerbestand
+    - erzeugt eine eindeutige Bestellnummer
+    - leert den Warenkorb
+    Gibt None zurueck, wenn der Warenkorb leer ist oder Lagerbestand nicht mehr reicht.
+    """
+    async with async_session() as session:
+        cart_result = await session.execute(
+            select(CartItem).where(CartItem.telegram_user_id == telegram_user_id)
+        )
+        cart_items = cart_result.scalars().all()
+        if not cart_items:
+            return None
+
+        order_lines = []
+        total = 0.0
+
+        for cart_item in cart_items:
+            product_result = await session.execute(
+                select(Product).where(Product.id == cart_item.product_id)
+            )
+            product = product_result.scalar_one_or_none()
+            if not product or product.stock < cart_item.quantity:
+                # Lagerbestand reicht nicht mehr aus - Bestellung abbrechen, Warenkorb bleibt erhalten
+                return None
+
+            product.stock -= cart_item.quantity
+            subtotal = product.price * cart_item.quantity
+            total += subtotal
+            order_lines.append(f"{cart_item.quantity}x {product.name}")
+
+        order_number = _generate_order_number()
+        order = Order(
+            order_number=order_number,
+            telegram_user_id=telegram_user_id,
+            total=total,
+            summary="\n".join(order_lines),
+        )
+        session.add(order)
+
+        for cart_item in cart_items:
+            await session.delete(cart_item)
+
+        await session.commit()
+
+        return {
+            "order_number": order_number,
+            "total": total,
+            "summary": "\n".join(order_lines),
+        }
