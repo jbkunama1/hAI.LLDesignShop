@@ -26,4 +26,4 @@ jobs:
         with:
           context: ./telegram-bot
           file: telegram-bot/Dockerfile
-          tags: ghcr.io/jbkunama1/hAI.LLDesignShop/telegram-bot:latest
+          tags: ghcr.io/jbkunama1/hai.lldesignshop/telegram-bot:latest
