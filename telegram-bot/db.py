@@ -40,6 +40,16 @@ class CartItem(Base):
     quantity = Column(Integer, default=1)
 
 
+class Customer(Base):
+    """Gespeicherte Kontaktdaten pro Telegram-Nutzer, fuer wiederkehrende Bestellungen."""
+    __tablename__ = "customers"
+    telegram_user_id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Order(Base):
     __tablename__ = "orders"
     id = Column(Integer, primary_key=True)
@@ -47,6 +57,10 @@ class Order(Base):
     telegram_user_id = Column(Integer, nullable=False)
     total = Column(Float, nullable=False)
     summary = Column(String, nullable=False)
+    customer_name = Column(String, nullable=True)
+    customer_email = Column(String, nullable=True)
+    customer_phone = Column(String, nullable=True)
+    status = Column(String, default="offen")  # offen | angenommen | abgelehnt
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -68,7 +82,6 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Beispielprodukte nur einfuegen, wenn Katalog leer ist
     async with async_session() as session:
         result = await session.execute(select(Product))
         if not result.scalars().first():
@@ -115,7 +128,6 @@ async def add_to_cart(telegram_user_id: int, product_id: int, quantity: int = 1)
         current_qty = item.quantity if item else 0
         new_qty = current_qty + quantity
 
-        # Plausibilitaetsgrenzen: nicht unter 0, nicht ueber Max-Limit, nicht ueber Lagerbestand
         upper_limit = min(MAX_QTY_PER_ITEM, product.stock)
         new_qty = max(0, min(new_qty, upper_limit))
 
@@ -166,7 +178,6 @@ async def validate_cart_stock(telegram_user_id: int) -> None:
     """
     Prueft vor dem Checkout, ob fuer alle Positionen im Warenkorb noch genug
     Lagerbestand vorhanden ist. Wirft InsufficientStockError, falls nicht.
-    Wichtig bei handgefertigten Unikaten mit knappem Lagerbestand.
     """
     items = await get_cart(telegram_user_id)
     for item in items:
@@ -176,13 +187,49 @@ async def validate_cart_stock(telegram_user_id: int) -> None:
             raise InsufficientStockError(item.product.name, available)
 
 
-async def finalize_order(telegram_user_id: int) -> Optional[dict]:
+# ---------------------------------------------------------------------
+# Kundendaten (Name, E-Mail Pflicht, Telefon optional) - werden pro
+# Telegram-Nutzer gespeichert, damit wiederkehrende Kunden sie nicht
+# erneut eingeben muessen.
+# ---------------------------------------------------------------------
+async def get_customer(telegram_user_id: int) -> Optional[Customer]:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Customer).where(Customer.telegram_user_id == telegram_user_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def save_customer(telegram_user_id: int, name: str, email: str, phone: Optional[str] = None) -> None:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Customer).where(Customer.telegram_user_id == telegram_user_id)
+        )
+        customer = result.scalar_one_or_none()
+        if customer:
+            customer.name = name
+            customer.email = email
+            customer.phone = phone
+        else:
+            customer = Customer(
+                telegram_user_id=telegram_user_id,
+                name=name,
+                email=email,
+                phone=phone,
+            )
+            session.add(customer)
+        await session.commit()
+
+
+async def finalize_order(telegram_user_id: int, customer) -> Optional[dict]:
     """
     Schliesst eine Bestellung verbindlich ab:
     - prueft Lagerbestand erneut (Race-Condition-Schutz bei parallelen Bestellungen)
     - reduziert den Lagerbestand
     - erzeugt eine eindeutige Bestellnummer
+    - speichert die Kontaktdaten bei der Bestellung (Snapshot zum Bestellzeitpunkt)
     - leert den Warenkorb
+    Status der Bestellung ist zunaechst "offen" - Admin kann spaeter annehmen/ablehnen.
     Gibt None zurueck, wenn der Warenkorb leer ist oder Lagerbestand nicht mehr reicht.
     """
     async with async_session() as session:
@@ -202,7 +249,6 @@ async def finalize_order(telegram_user_id: int) -> Optional[dict]:
             )
             product = product_result.scalar_one_or_none()
             if not product or product.stock < cart_item.quantity:
-                # Lagerbestand reicht nicht mehr aus - Bestellung abbrechen, Warenkorb bleibt erhalten
                 return None
 
             product.stock -= cart_item.quantity
@@ -216,6 +262,10 @@ async def finalize_order(telegram_user_id: int) -> Optional[dict]:
             telegram_user_id=telegram_user_id,
             total=total,
             summary="\n".join(order_lines),
+            customer_name=customer.name,
+            customer_email=customer.email,
+            customer_phone=customer.phone,
+            status="offen",
         )
         session.add(order)
 
@@ -229,3 +279,24 @@ async def finalize_order(telegram_user_id: int) -> Optional[dict]:
             "total": total,
             "summary": "\n".join(order_lines),
         }
+
+
+async def get_order_by_number(order_number: str) -> Optional[Order]:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Order).where(Order.order_number == order_number)
+        )
+        return result.scalar_one_or_none()
+
+
+async def set_order_status(order_number: str, status: str) -> Optional[Order]:
+    """status: 'angenommen' oder 'abgelehnt'"""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Order).where(Order.order_number == order_number)
+        )
+        order = result.scalar_one_or_none()
+        if order:
+            order.status = status
+            await session.commit()
+        return order

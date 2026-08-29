@@ -11,10 +11,20 @@ Bedienung ueber Inline-Menues (Buttons direkt in der Nachricht), komplett auf De
 
 Plausibilitaetspruefungen bei der Bestellung:
   - Lagerbestand wird vor dem finalen Abschicken erneut geprueft (Race-Condition-Schutz)
-  - Maximalmenge pro Artikel begrenzt (siehe db.py: MAX_QTY_PER_ITEM, Standard 5)
+  - Maximalmenge pro Artikel begrenzt (siehe db.py: MAX_QTY_PER_ITEM)
   - Anti-Doppelklick-Schutz: pro Nutzer nur eine Bestellung gleichzeitig in Bearbeitung
   - Einfaches Rate-Limiting gegen Spam-Klicks (siehe RateLimitMiddleware)
   - Eindeutige Bestellnummer pro Bestellung (Format LLD-JJMMTT-XXXX)
+
+Kontaktdaten-Flow (neu):
+  - Vor dem finalen Checkout fragt der Bot Name und E-Mail ab (Pflicht) sowie
+    optional eine Telefonnummer (ueberspringbar).
+  - Daten werden pro Telegram-User-ID gespeichert (siehe db.py: Customer), damit
+    wiederkehrende Kunden sie nur einmal eingeben muessen und beim naechsten Mal
+    nur noch bestaetigen.
+  - Der Kunde kann sofort durchbestellen, der Admin bekommt eine Benachrichtigung
+    mit "Annehmen" / "Ablehnen" - das ist nicht zeitkritisch fuer den Kaufabschluss,
+    sondern dient der nachtraeglichen Bearbeitung durch den Shop-Betreiber.
 
 Fuer Zahlungen: Platzhalter-Flow ueber manuelle Bestaetigung (Ueberweisung/PayPal-Link).
 Fuer Telegram Payments API / Stripe siehe README.md Abschnitt "Zahlungen".
@@ -23,11 +33,15 @@ Fuer Telegram Payments API / Stripe siehe README.md Abschnitt "Zahlungen".
 import asyncio
 import logging
 import os
+import re
 import time
 from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -35,7 +49,6 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from aiogram.fsm.storage.memory import MemoryStorage
 
 from db import (
     init_db,
@@ -46,6 +59,9 @@ from db import (
     clear_cart,
     validate_cart_stock,
     finalize_order,
+    get_customer,
+    save_customer,
+    set_order_status,
     InsufficientStockError,
     MAX_QTY_PER_ITEM,
 )
@@ -58,7 +74,17 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 CURRENCY = os.getenv("CURRENCY", "EUR")
 RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "0.6"))
 
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 router = Router()
+
+
+class CheckoutStates(StatesGroup):
+    waiting_name = State()
+    waiting_email = State()
+    waiting_phone = State()
+    confirm = State()
+
 
 # ---------------------------------------------------------------------
 # Shop-Texte fuer LauraLieDesign - siehe auch SHOP_TEXTS.md
@@ -81,9 +107,6 @@ ABOUT_TEXT = (
 
 # ---------------------------------------------------------------------
 # Anti-Spam / Rate-Limiting Middleware
-# Verhindert, dass ein Nutzer den Bot durch schnelles Klicken/Senden flutet.
-# Telegram selbst erlaubt ohnehin nur ca. 1 Nachricht/Sekunde pro Chat,
-# ohne Schutz laeuft der Bot sonst schnell in API-Rate-Limits.
 # ---------------------------------------------------------------------
 class RateLimitMiddleware(BaseMiddleware):
     def __init__(self, limit_seconds: float = 0.6):
@@ -108,10 +131,7 @@ class RateLimitMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
-# ---------------------------------------------------------------------
-# Anti-Doppelklick-Schutz beim Checkout:
-# pro Nutzer darf immer nur eine Bestellung gleichzeitig verarbeitet werden.
-# ---------------------------------------------------------------------
+# Anti-Doppelklick-Schutz beim Checkout: pro Nutzer nur eine Bestellung gleichzeitig
 _checkout_locks: Dict[int, bool] = {}
 
 
@@ -162,11 +182,31 @@ def cart_kb(items) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def skip_phone_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="\u23ed\ufe0f \u00dcberspringen", callback_data="phone:skip")],
+        ]
+    )
+
+
 def checkout_confirm_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="\u2705 Bestellung jetzt abschicken", callback_data="checkout:confirm")],
+            [InlineKeyboardButton(text="\u270f\ufe0f Kontaktdaten \u00e4ndern", callback_data="checkout:edit_contact")],
             [InlineKeyboardButton(text="\u2b05\ufe0f Zur\u00fcck zum Warenkorb", callback_data="menu:cart")],
+        ]
+    )
+
+
+def admin_order_kb(order_number: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="\u2705 Annehmen", callback_data=f"admin:accept:{order_number}"),
+                InlineKeyboardButton(text="\u274c Ablehnen", callback_data=f"admin:reject:{order_number}"),
+            ]
         ]
     )
 
@@ -190,16 +230,28 @@ async def render_cart_text(user_id: int) -> tuple[str, list]:
     return "\n".join(lines), items
 
 
+def render_contact_summary(name: str, email: str, phone) -> str:
+    phone_line = phone if phone else "<i>nicht angegeben</i>"
+    return (
+        f"\U0001F464 <b>Deine Kontaktdaten</b>\n\n"
+        f"Name: {name}\n"
+        f"E-Mail: {email}\n"
+        f"Telefon: {phone_line}"
+    )
+
+
 # ---------------------------------------------------------------------
 # /start -> Hauptmenue
 # ---------------------------------------------------------------------
 @router.message(CommandStart())
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(WELCOME_TEXT, reply_markup=main_menu_kb())
 
 
 @router.callback_query(F.data == "menu:main")
-async def cb_menu_main(callback: CallbackQuery):
+async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.edit_text(WELCOME_TEXT, reply_markup=main_menu_kb())
     await callback.answer()
 
@@ -257,7 +309,8 @@ async def cmd_cart(message: Message):
 
 
 @router.callback_query(F.data == "menu:cart")
-async def cb_menu_cart(callback: CallbackQuery):
+async def cb_menu_cart(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     await show_cart(callback.message, callback.from_user.id, edit=True)
     await callback.answer()
 
@@ -318,14 +371,111 @@ async def cb_menu_about(callback: CallbackQuery):
 
 
 # ---------------------------------------------------------------------
-# Checkout mit Bestaetigung + Plausibilitaetspruefung
+# Checkout: Start -> Lagerpruefung -> Kontaktdaten-Flow -> Bestaetigung
 # ---------------------------------------------------------------------
-async def show_checkout_confirm(message: Message, user_id: int, edit: bool = False):
-    text, items = await render_cart_text(user_id)
+async def start_checkout(callback_or_message, user_id: int, state: FSMContext, is_callback: bool):
+    try:
+        await validate_cart_stock(user_id)
+    except InsufficientStockError as exc:
+        text = f"Nur noch {exc.available}x '{exc.product_name}' verf\u00fcgbar. Bitte Menge anpassen."
+        if is_callback:
+            await callback_or_message.answer(text, show_alert=True)
+            await show_cart(callback_or_message.message, user_id, edit=True)
+        else:
+            await callback_or_message.answer(text)
+        return
+
+    existing_customer = await get_customer(user_id)
+    target_message = callback_or_message.message if is_callback else callback_or_message
+
+    if existing_customer:
+        await state.update_data(
+            name=existing_customer.name,
+            email=existing_customer.email,
+            phone=existing_customer.phone,
+        )
+        await show_checkout_confirm(target_message, user_id, state, edit=is_callback)
+    else:
+        await state.set_state(CheckoutStates.waiting_name)
+        text = "Bitte gib deinen vollst\u00e4ndigen Namen f\u00fcr die Bestellung ein:"
+        if is_callback:
+            await target_message.edit_text(text)
+        else:
+            await target_message.answer(text)
+
+    if is_callback:
+        await callback_or_message.answer()
+
+
+@router.message(Command("checkout"))
+async def cmd_checkout(message: Message, state: FSMContext):
+    await start_checkout(message, message.from_user.id, state, is_callback=False)
+
+
+@router.callback_query(F.data == "menu:checkout")
+async def cb_menu_checkout(callback: CallbackQuery, state: FSMContext):
+    await start_checkout(callback, callback.from_user.id, state, is_callback=True)
+
+
+@router.callback_query(F.data == "checkout:edit_contact")
+async def cb_edit_contact(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(CheckoutStates.waiting_name)
+    await callback.message.edit_text("Bitte gib deinen vollst\u00e4ndigen Namen ein:")
+    await callback.answer()
+
+
+@router.message(StateFilter(CheckoutStates.waiting_name))
+async def process_name(message: Message, state: FSMContext):
+    name = message.text.strip()
+    if len(name) < 2:
+        await message.answer("Bitte gib einen g\u00fcltigen Namen ein (mind. 2 Zeichen).")
+        return
+    await state.update_data(name=name)
+    await state.set_state(CheckoutStates.waiting_email)
+    await message.answer("Danke! Wie lautet deine E-Mail-Adresse? (f\u00fcr Bestellbest\u00e4tigung/R\u00fcckfragen)")
+
+
+@router.message(StateFilter(CheckoutStates.waiting_email))
+async def process_email(message: Message, state: FSMContext):
+    email = message.text.strip()
+    if not EMAIL_PATTERN.match(email):
+        await message.answer("Das sieht nicht nach einer g\u00fcltigen E-Mail-Adresse aus. Bitte erneut eingeben:")
+        return
+    await state.update_data(email=email)
+    await state.set_state(CheckoutStates.waiting_phone)
+    await message.answer(
+        "Optional: Telefonnummer f\u00fcr R\u00fcckfragen zur Bestellung "
+        "(du kannst diesen Schritt auch \u00fcberspringen):",
+        reply_markup=skip_phone_kb(),
+    )
+
+
+@router.message(StateFilter(CheckoutStates.waiting_phone))
+async def process_phone(message: Message, state: FSMContext):
+    phone = message.text.strip()
+    await state.update_data(phone=phone)
+    await show_checkout_confirm(message, message.from_user.id, state, edit=False)
+
+
+@router.callback_query(F.data == "phone:skip", StateFilter(CheckoutStates.waiting_phone))
+async def skip_phone(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(phone=None)
+    await callback.answer()
+    await show_checkout_confirm(callback.message, callback.from_user.id, state, edit=True)
+
+
+async def show_checkout_confirm(message: Message, user_id: int, state: FSMContext, edit: bool = False):
+    await state.set_state(CheckoutStates.confirm)
+    data = await state.get_data()
+
+    cart_text, items = await render_cart_text(user_id)
     if not items:
+        await state.clear()
+        text = "Dein Warenkorb ist leer."
         kb = back_to_menu_kb()
     else:
-        text += "\n\nBestellung jetzt verbindlich abschicken?"
+        contact_text = render_contact_summary(data.get("name", "-"), data.get("email", "-"), data.get("phone"))
+        text = f"{cart_text}\n\n{contact_text}\n\nBestellung jetzt verbindlich abschicken?"
         kb = checkout_confirm_kb()
 
     if edit:
@@ -334,42 +484,37 @@ async def show_checkout_confirm(message: Message, user_id: int, edit: bool = Fal
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-@router.message(Command("checkout"))
-async def cmd_checkout(message: Message):
-    await show_checkout_confirm(message, message.from_user.id)
-
-
-@router.callback_query(F.data == "menu:checkout")
-async def cb_menu_checkout(callback: CallbackQuery):
-    # Plausibilitaetspruefung: reicht der Lagerbestand noch fuer alle Positionen?
-    try:
-        await validate_cart_stock(callback.from_user.id)
-    except InsufficientStockError as exc:
-        await callback.answer(
-            f"Nur noch {exc.available}x '{exc.product_name}' verf\u00fcgbar. Bitte Menge anpassen.",
-            show_alert=True,
-        )
-        await show_cart(callback.message, callback.from_user.id, edit=True)
-        return
-
-    await show_checkout_confirm(callback.message, callback.from_user.id, edit=True)
-    await callback.answer()
-
-
-@router.callback_query(F.data == "checkout:confirm")
-async def cb_checkout_confirm(callback: CallbackQuery):
+@router.callback_query(F.data == "checkout:confirm", StateFilter(CheckoutStates.confirm))
+async def cb_checkout_confirm(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
 
-    # Anti-Doppelklick-Schutz: pro Nutzer nur eine Bestellung gleichzeitig
     if _checkout_locks.get(user_id):
         await callback.answer("Deine Bestellung wird bereits verarbeitet \u23f3", show_alert=True)
         return
     _checkout_locks[user_id] = True
 
     try:
-        # Erneute Lagerbestand-Pruefung direkt vor dem Abschluss (Race-Condition-Schutz,
-        # falls zwischenzeitlich ein anderer Kunde denselben Artikel bestellt hat)
-        order = await finalize_order(user_id)
+        data = await state.get_data()
+        name = data.get("name")
+        email = data.get("email")
+        phone = data.get("phone")
+
+        if not name or not email:
+            await callback.answer("Kontaktdaten unvollst\u00e4ndig. Bitte erneut starten.", show_alert=True)
+            await state.clear()
+            return
+
+        await save_customer(user_id, name, email, phone)
+
+        class _CustomerSnapshot:
+            pass
+
+        snapshot = _CustomerSnapshot()
+        snapshot.name = name
+        snapshot.email = email
+        snapshot.phone = phone
+
+        order = await finalize_order(user_id, snapshot)
 
         if order is None:
             await callback.answer(
@@ -377,17 +522,25 @@ async def cb_checkout_confirm(callback: CallbackQuery):
                 "St\u00fcckzahl verf\u00fcgbar. Bitte Warenkorb pr\u00fcfen.",
                 show_alert=True,
             )
+            await state.clear()
             await show_cart(callback.message, user_id, edit=True)
             return
 
         user = callback.from_user
+        phone_line = phone if phone else "nicht angegeben"
         admin_text = (
             f"\U0001F4E6 Neue Bestellung {order['order_number']}\n"
             f"von @{user.username or user.id}\n\n"
-            f"{order['summary']}\n\nGesamt: {order['total']:.2f} {CURRENCY}"
+            f"{order['summary']}\n\nGesamt: {order['total']:.2f} {CURRENCY}\n\n"
+            f"\U0001F464 Name: {name}\n\U0001F4E7 E-Mail: {email}\n\U0001F4DE Telefon: {phone_line}\n\n"
+            f"Status: offen \u2013 bitte annehmen oder ablehnen:"
         )
         if ADMIN_CHAT_ID:
-            await callback.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text)
+            await callback.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=admin_text,
+                reply_markup=admin_order_kb(order["order_number"]),
+            )
 
         await callback.message.edit_text(
             f"Danke f\u00fcr deine Bestellung! \u2705\n\n"
@@ -399,8 +552,39 @@ async def cb_checkout_confirm(callback: CallbackQuery):
             parse_mode="HTML",
         )
         await callback.answer("Bestellung abgeschickt \U0001F389")
+        await state.clear()
     finally:
         _checkout_locks.pop(user_id, None)
+
+
+# ---------------------------------------------------------------------
+# Admin: Bestellung annehmen / ablehnen (nicht zeitkritisch, Kunde hat
+# bereits final bestellt - dient der Nachbearbeitung durch den Shop-Betreiber)
+# ---------------------------------------------------------------------
+@router.callback_query(F.data.startswith("admin:accept:"))
+async def cb_admin_accept(callback: CallbackQuery):
+    order_number = callback.data.split(":", 2)[2]
+    order = await set_order_status(order_number, "angenommen")
+    if not order:
+        await callback.answer("Bestellung nicht gefunden.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        callback.message.text + f"\n\n\u2705 Angenommen",
+    )
+    await callback.answer("Bestellung angenommen \u2705")
+
+
+@router.callback_query(F.data.startswith("admin:reject:"))
+async def cb_admin_reject(callback: CallbackQuery):
+    order_number = callback.data.split(":", 2)[2]
+    order = await set_order_status(order_number, "abgelehnt")
+    if not order:
+        await callback.answer("Bestellung nicht gefunden.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        callback.message.text + f"\n\n\u274c Abgelehnt",
+    )
+    await callback.answer("Bestellung abgelehnt \u274c")
 
 
 # ---------------------------------------------------------------------
