@@ -1,123 +1,187 @@
-# hAI.LLDesignShop
+<div align="center">
 
-![TruffleHog](https://img.shields.io/badge/security-TruffleHog-blue)
-![Docker Build](https://img.shields.io/badge/docker-automated-blue)
+# 🛍️ hAI.LLDesignShop
 
-Kombiniertes Self-Hosting-Setup für einen unabhängigen Webshop als Etsy-Ersatz:
+### Dein unabhängiger Webshop – raus aus Etsy, rein ins Self-Hosting
 
-- **EverShop** – vollwertiger Webshop (TypeScript/Node, GraphQL-API, React-Frontend, PostgreSQL) für bis zu ca. 50 Artikel
-- **Telegram-Shop-Bot** – schlanker Python/aiogram-Bot für Direktverkauf im Chat, mit optionalem Katalog-Abgleich aus EverShop
+**EverShop** 🛒 + **Telegram-Shop-Bot** 🤖 als kombinierter Docker-Compose-Stack
 
-Beides läuft als Docker-Compose-Stack, direkt kompatibel mit Portainer (als Stack importieren).
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+[![Portainer](https://img.shields.io/badge/Portainer-ready-13BEF9?style=for-the-badge&logo=portainer&logoColor=white)](https://www.portainer.io/)
+[![Telegram](https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://core.telegram.org/bots)
+[![EverShop](https://img.shields.io/badge/EverShop-Commerce-FF6B6B?style=for-the-badge&logo=graphql&logoColor=white)](https://evershop.io/)
 
-## Architektur
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+[![Made with Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![Node](https://img.shields.io/badge/Node.js-TypeScript-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-Bot--DB-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Status](https://img.shields.io/badge/Status-aktiv-brightgreen?style=flat-square)]()
+[![Artikel](https://img.shields.io/badge/Katalog-≤50%20Artikel-orange?style=flat-square)]()
 
+</div>
+
+---
+
+## 📖 Worum geht's?
+
+`hAI.LLDesignShop` ist dein Fahrplan raus aus der Abhängigkeit von Etsy & Co. Ein
+**vollwertiger, selbstgehosteter Webshop** kombiniert mit einem **schlanken Telegram-Bot**
+für Direktverkauf im Chat – beides läuft als ein einziger Docker-Compose-Stack, den du
+1:1 als **Portainer-Stack** importieren kannst.
+
+Gedacht für kleine Shops mit bis zu **~50 Artikeln** – kein Overkill, keine unnötige Komplexität.
+
+---
+
+## 🧩 Architektur
+
+```mermaid
+graph TD
+    A[("🐘 PostgreSQL<br/>evershop_db")] --> B["🛒 EverShop<br/>Port 3000 · GraphQL + Admin-UI"]
+    B -->|"GraphQL Sync (optional)"| C["🤖 Telegram-Bot<br/>aiogram · SQLite"]
+    C --> D(["💬 Kunden im Telegram-Chat"])
+    B --> E(["🌐 Kunden im Webshop"])
+
+    style A fill:#4169E1,color:#fff
+    style B fill:#FF6B6B,color:#fff
+    style C fill:#26A5E4,color:#fff
+    style D fill:#2ecc71,color:#fff
+    style E fill:#2ecc71,color:#fff
 ```
-                 ┌──────────────────────┐
-                 │   EverShop DB    │  (PostgreSQL)
-                 └────────┬────────┘
-                          │
-                 ┌─────────┬─────────┐
-                 │     EverShop     │  Port 3000, GraphQL + Admin-UI
-                 └────────┬────────┘
-                          │ GraphQL (Katalog-Sync, optional)
-                 ┌─────────┬─────────┐
-                 │  Telegram-Bot    │  eigene SQLite-DB, aiogram
-                 └──────────────────────┘
+
+Der Telegram-Bot hat eine **eigene, leichtgewichtige SQLite-Datenbank** und läuft komplett
+unabhängig von EverShop. Über `sync_evershop.py` kannst du optional den Produktkatalog aus
+EverShop übernehmen – Katalogpflege an einer Stelle, Verkauf über zwei Kanäle. ✨
+
+---
+
+## 🚀 Schnellstart
+
+```bash
+# 1️⃣ Repository klonen
+git clone https://github.com/jbkunama1/hAI.LLDesignShop.git
+cd hAI.LLDesignShop
+
+# 2️⃣ Umgebungsvariablen vorbereiten
+cp .env.example .env
+nano .env   # Werte anpassen, siehe Tabelle unten 👇
+
+# 3️⃣ Stack starten
+docker compose up -d
+
+# 4️⃣ Logs checken
+docker compose logs -f
 ```
 
-Der Telegram-Bot hat eine eigene, leichtgewichtige SQLite-Datenbank und funktioniert
-komplett unabhängig von EverShop. Über `sync_evershop.py` kannst du optional den
-Produktkatalog aus EverShop in den Bot übernehmen, damit du nur eine Quelle pflegen musst.
+Danach:
 
-## Schnellstart
+- 🛒 **EverShop-Setup** unter `http://<host>:3000` öffnen und Einrichtungsassistent durchlaufen
+- 🤖 **Telegram-Bot** in Telegram öffnen und `/start` senden
 
-1. Repository klonen bzw. als Portainer-Stack aus diesem Repo einbinden.
-2. `.env.example` nach `.env` kopieren und Werte anpassen:
-   ```bash
-   cp .env.example .env
-   ```
-3. Wichtige Werte in `.env` setzen:
-   - `TELEGRAM_BOT_TOKEN` – von [@BotFather](https://t.me/BotFather) anfordern
-   - `TELEGRAM_ADMIN_CHAT_ID` – deine Chat-ID für Bestellbenachrichtigungen (z. B. via `@userinfobot` ermitteln)
-   - `POSTGRES_PASSWORD` und `SESSION_SECRET` – auf sichere, zufällige Werte ändern
-4. Stack starten:
-   ```bash
-   docker compose up -d
-   ```
-5. EverShop Admin-Setup unter `http://<host>:3000` aufrufen und Einrichtungsassistenten durchlaufen.
-6. Telegram-Bot in Telegram öffnen und `/start` senden.
+### 🔑 Wichtige `.env`-Werte
 
-## Verzeichnisstruktur
+| Variable | Beschreibung | Woher? |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | Token für deinen Bot | 🔗 [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_ADMIN_CHAT_ID` | Deine Chat-ID für Bestellbenachrichtigungen | 🔗 [@userinfobot](https://t.me/userinfobot) |
+| `POSTGRES_PASSWORD` | DB-Passwort für EverShop | selbst setzen, sicher & zufällig 🔒 |
+| `SESSION_SECRET` | Session-Secret für EverShop | selbst setzen, sicher & zufällig 🔒 |
+| `SHOP_CURRENCY` | Angezeigte Währung | Standard: `EUR` |
+
+---
+
+## 📁 Projektstruktur
 
 ```
 hAI.LLDesignShop/
-├── docker-compose.yml       # Gesamtstack: EverShop + DB + Telegram-Bot
-├── .env.example             # Vorlage für Umgebungsvariablen
-├── .gitignore
-├── README.md
-└── telegram-bot/
+├── 🐳 docker-compose.yml       # Gesamtstack: EverShop + DB + Telegram-Bot
+├── ⚙️  .env.example             # Vorlage für Umgebungsvariablen
+├── 🚫 .gitignore
+├── 📄 README.md
+├── 📜 LICENSE
+└── 🤖 telegram-bot/
     ├── Dockerfile
     ├── requirements.txt
-    ├── bot.py                # Bot-Logik (Katalog, Warenkorb, Checkout)
-    ├── db.py                 # SQLite-Datenschicht
-    └── sync_evershop.py      # Optionaler Katalog-Abgleich via GraphQL
+    ├── bot.py                 # Katalog, Warenkorb, Checkout
+    ├── db.py                  # SQLite-Datenschicht
+    └── sync_evershop.py       # Katalog-Abgleich via GraphQL
 ```
 
-## Telegram-Bot: Funktionsumfang (Stand jetzt)
+---
 
-- `/start` – Begrüßung und Menü
-- `/shop` – Katalog als Inline-Buttons (Bild, Beschreibung, Preis, "In den Warenkorb")
-- `/cart` – Warenkorb mit Zwischensumme
-- `/checkout` – schließt Bestellung ab, benachrichtigt dich als Admin per Telegram-Nachricht
+## 🤖 Telegram-Bot: Funktionsumfang
 
-Der Checkout-Flow ist bewusst einfach gehalten: Nach der Bestellung bekommst du (Admin) eine
-Nachricht mit der Bestellübersicht und meldest dich manuell mit Zahlungsdetails (PayPal-Link,
-Überweisung o. ä.) beim Kunden zurück. Das reicht für den Start völlig aus und lässt sich
-später erweitern.
+| Befehl | Was passiert |
+|---|---|
+| `/start` | 👋 Begrüßung & Menü |
+| `/shop` | 🖼️ Katalog als Inline-Buttons (Bild, Beschreibung, Preis) |
+| `/cart` | 🧺 Warenkorb mit Zwischensumme |
+| `/checkout` | ✅ Bestellung abschließen, Admin wird per Telegram benachrichtigt |
 
-## Zahlungen
+> 💡 **Checkout-Flow bewusst simpel gehalten:** Nach der Bestellung bekommst du als Admin
+> eine Nachricht mit der Übersicht und meldest dich manuell mit den Zahlungsdetails
+> (PayPal-Link, Überweisung o. Ä.) zurück. Reicht für den Start völlig – und lässt sich
+> jederzeit automatisieren.
 
-Für einen Etsy-Ersatz in Deutschland/EU sind PayPal und SEPA-Überweisung meist am relevantesten.
-Für eine automatisierte Lösung bieten sich zwei Wege an:
+---
 
-1. **Telegram Payments API** – native Zahlungsabwicklung im Bot, unterstützt u. a. Stripe als
-   Payment-Provider. Erfordert einen Payment-Provider-Token vom BotFather
-   (`/mybots` → Payments). Danach lässt sich in `bot.py` ein `send_invoice`-Aufruf ergänzen.
-2. **Manuelle Freigabe (aktueller Stand)** – wie oben beschrieben, Admin bestätigt Zahlungseingang
-   manuell, z. B. per PayPal-Link, den man dem Kunden nach der Bestellung schickt.
+## 💳 Zahlungen
 
-EverShop selbst unterstützt zusätzlich reguläre Checkout- und Zahlungsmodule über sein
-Plugin-System (siehe [EverShop-Dokumentation](https://evershop.io/docs)).
+Für einen Etsy-Ersatz in 🇩🇪/🇪🇺 sind **PayPal** und **SEPA-Überweisung** meist am relevantesten.
 
-## Produkte pflegen
+| Weg | Beschreibung |
+|---|---|
+| 🅰️ **Telegram Payments API** | Native Zahlungsabwicklung im Bot, u. a. mit Stripe als Provider. Token via BotFather (`/mybots` → Payments), danach `send_invoice()` in `bot.py` ergänzen |
+| 🅱️ **Manuelle Freigabe** *(aktueller Stand)* | Admin bestätigt Zahlungseingang manuell nach Bestellbenachrichtigung |
 
-**Option A – nur EverShop pflegen (empfohlen):**
-Produkte im EverShop-Admin unter `http://<host>:3000/admin` anlegen, dann `sync_evershop.py`
-im Bot-Container ausführen, um den Telegram-Katalog zu aktualisieren:
+EverShop selbst bringt zusätzlich ein **Plugin-System** für reguläre Checkout- und
+Zahlungsmodule mit → [EverShop-Dokumentation](https://evershop.io/docs) 📚
+
+---
+
+## 🗂️ Produkte pflegen
+
+**Option A – nur EverShop pflegen** *(empfohlen ⭐)*
+
+Produkte im EverShop-Admin (`http://<host>:3000/admin`) anlegen, danach synchronisieren:
 
 ```bash
 docker compose exec telegram-bot python sync_evershop.py
 ```
 
-Das lässt sich auch als Cronjob auf dem Host oder als GitHub Action periodisch automatisieren.
+Lässt sich super als **Cronjob** oder **GitHub Action** automatisieren. 🔁
 
-**Option B – nur Telegram-Bot nutzen:**
-Direkt in `telegram-bot/db.py` die Demo-Produkte durch eigene ersetzen, oder ein kleines
-Insert-Skript schreiben. Für bis zu 50 Artikel reicht das ohne EverShop völlig aus, falls
-du erst einmal nur den Bot live schalten willst.
+**Option B – nur den Telegram-Bot nutzen**
 
-## Nächste Schritte / Ausbaumöglichkeiten
+Demo-Produkte direkt in `telegram-bot/db.py` ersetzen oder eigenes Insert-Skript schreiben.
+Für ≤ 50 Artikel reicht das komplett aus, falls du erstmal nur den Bot live schalten willst. 🚀
 
-- Eigene Domain + `cloudflared`-Tunnel vor EverShop schalten (kein offener Port nötig)
-- Telegram Payments API für automatisierte Zahlungsabwicklung integrieren
-- Bestell-Historie und Lagerbestand-Synchronisation zwischen Bot und EverShop erweitern
-- Backup-Strategie für `evershop_db_data` und `telegram_bot_data` Volumes einrichten
-  (z. B. per `pg_dump`-Cronjob)
+---
 
-## Lizenzhinweise
+## 🛣️ Roadmap / Ausbauideen
 
-- [EverShop](https://github.com/evershopcommerce/evershop) – GPL-3.0
-- Telegram-Bot-Grundgerüst in diesem Repo – frei anpassbar, keine externen Lizenzabhängigkeiten
-  außer den in `requirements.txt` gelisteten Python-Paketen (aiogram, SQLAlchemy, httpx, jeweils
-  MIT/Apache-2.0 lizenziert)
+- [ ] 🌐 Eigene Domain + `cloudflared`-Tunnel vor EverShop (kein offener Port nötig)
+- [ ] 💳 Telegram Payments API für automatisierte Zahlungsabwicklung
+- [ ] 🔄 Bestell-Historie & Lagerbestand-Sync zwischen Bot und EverShop
+- [ ] 💾 Backup-Strategie für `evershop_db_data` & `telegram_bot_data` (z. B. `pg_dump`-Cronjob)
+
+---
+
+## 📜 Lizenzhinweise
+
+| Komponente | Lizenz |
+|---|---|
+| [EverShop](https://github.com/evershopcommerce/evershop) | GPL-3.0 |
+| Telegram-Bot-Grundgerüst (dieses Repo) | MIT |
+| Python-Abhängigkeiten (aiogram, SQLAlchemy, httpx) | MIT / Apache-2.0 |
+
+---
+
+<div align="center">
+
+Made with ☕ & 🐳 für ein unabhängiges Shop-Setup abseits von Etsy
+
+**[⭐ Repo](https://github.com/jbkunama1/hAI.LLDesignShop) · [📖 EverShop Docs](https://evershop.io/docs) · [🤖 BotFather](https://t.me/BotFather)**
+
+</div>
