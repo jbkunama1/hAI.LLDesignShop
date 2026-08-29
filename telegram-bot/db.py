@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, select
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////data/shop.db")
+raw_db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////data/shop.db")
+if raw_db_url.startswith("sqlite://") and not raw_db_url.startswith("sqlite+"):
+    DATABASE_URL = raw_db_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+else:
+    DATABASE_URL = raw_db_url
 
 Base = declarative_base()
 engine = create_async_engine(DATABASE_URL, echo=False)
