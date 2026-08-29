@@ -1,10 +1,149 @@
-<!DOCTYPE html>
-<html>
+﻿<!DOCTYPE html>
+<html lang="de">
 <head>
-    <title>hAI.LLDesignShop</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎨 hAI.LLDesignShop</title>
+    <style>
+        :root {
+            --primary: #6c5ce7;
+            --secondary: #00b894;
+            --accent: #fd79a8;
+            --dark: #2d3436;
+            --light: #ffffff;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: '"Segoe UI"', system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #a29bfe 0%, #74b9ff 50%, #81ecec 100%);
+            color: var(--dark);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        header {
+            text-align: center;
+            padding: 4rem 1rem 2rem;
+            color: var(--light);
+        }
+        header h1 {
+            font-size: 3.5rem;
+            margin-bottom: 0.5rem;
+            text-shadow: 2px 2px 8px rgba(0,0,0,0.3);
+        }
+        header p { font-size: 1.25rem; opacity: 0.95; }
+        .badges { margin-top: 1.5rem; }
+        .badges span {
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            backdrop-filter: blur(10px);
+            padding: 0.4rem 1rem;
+            border-radius: 20px;
+            margin: 0.2rem;
+            font-size: 0.85rem;
+            border: 1px solid rgba(255,255,255,0.3);
+        }
+        main {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+        .card {
+            background: var(--light);
+            border-radius: 16px;
+            padding: 2rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+        .card:hover { transform: translateY(-3px); }
+        .card h2 {
+            color: var(--primary);
+            margin-bottom: 1rem;
+            font-size: 1.8rem;
+        }
+        .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; }
+        .feature {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 1.5rem;
+            border-radius: 12px;
+            text-align: center;
+        }
+        .feature .icon { font-size: 2.5rem; }
+        .feature h3 { margin: 0.5rem 0; color: var(--dark); }
+        pre {
+            background: #1e1e2e;
+            color: #a6e3a1;
+            padding: 1.2rem;
+            border-radius: 10px;
+            overflow-x: auto;
+            font-family: '"Cascadia Code"', '"Fira Code"', monospace;
+            font-size: 0.9rem;
+        }
+        .btn {
+            display: inline-block;
+            background: var(--primary);
+            color: var(--light);
+            padding: 0.8rem 1.8rem;
+            border-radius: 30px;
+            text-decoration: none;
+            font-weight: bold;
+            margin: 0.3rem;
+            transition: background 0.2s;
+            box-shadow: 0 4px 12px rgba(108, 92, 231, 0.4);
+        }
+        .btn:hover { background: var(--secondary); }
+        footer { text-align: center; padding: 2rem; color: var(--light); }
+    </style>
 </head>
 <body>
-    <h1>hAI.LLDesignShop</h1>
-    <p>Projekt-Dokumentation für den unabhängigen Webshop.</p>
+    <header>
+        <h1>🎨 hAI.LLDesignShop</h1>
+        <p>Dein unabhängiger Self-Hosting Webshop – die smarte Etsy-Alternative! 🚀</p>
+        <div class="badges">
+            <span>🛍️ EverShop</span>
+            <span>🤖 Telegram-Bot</span>
+            <span>🐘 PostgreSQL</span>
+            <span>🐳 Docker</span>
+            <span>🛡️ TruffleHog</span>
+        </div>
+    </header>
+
+    <main>
+        <section class="card">
+            <h2>🌟 Über das Projekt</h2>
+            <p>Willkommen bei <b>hAI.LLDesignShop</b>! 👋 Ein komplettes, selbstgehostetes E-Commerce-Ökosystem für kleine bis mittelgroße Shops (bis ca. 50 Artikel). DSGVO-konform, unabhängig, und unter deiner Kontrolle.</p>
+        </section>
+
+        <section class="card">
+            <h2>✨ Features</h2>
+            <div class="features">
+                <div class="feature"><div class="icon">🔒</div><h3>Self-Hosted</h3><p>Daten bleiben bei dir! 🇪🇺</p></div>
+                <div class="feature"><div class="icon">🌐</div><h3>Dual-Channel</h3><p>Webshop & Telegram</p></div>
+                <div class="feature"><div class="icon">🔄</div><h3>Auto-Sync</h3><p>EverShop → Bot Katalog</p></div>
+                <div class="feature"><div class="icon">🐳</div><h3>Portainer</h3><p>One-Click Deploy</p></div>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2>🚀 Schnellstart</h2>
+            <pre>git clone https://github.com/jbkunama1/hAI.LLDesignShop.git
+cd hAI.LLDesignShop
+cp .env.example .env
+docker network create highfishNetwork
+docker compose up -d</pre>
+            <p style="margin-top: 1rem;">Dann EverShop Admin unter <code>http://&lt;host&gt;:3000</code> aufrufen.</p>
+        </section>
+
+        <section class="card">
+            <h2>📦 Deployment Optionen</h2>
+            <a href="https://github.com/jbkunama1/hAI.LLDesignShop" class="btn">📂 GitHub Repo</a>
+            <a href="https://github.com/jbkunama1/hAI.LLDesignShop/blob/main/README.md" class="btn">📖 Volle Doku</a>
+            <a href="https://hub.docker.com/" class="btn">🐳 Docker Hub</a>
+        </section>
+    </main>
+
+    <footer>
+        <p>Made with ❤️ | Lizenz: GPL-3.0 | © 2026 hAI.LLDesignShop</p>
+    </footer>
 </body>
 </html>
