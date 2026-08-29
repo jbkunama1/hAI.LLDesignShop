@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LauraLieDesign 🎒 – hAI.LLDesignShop</title>
+<meta name="description" content="LauraLieDesign – handgefertigte Stoff-Schultüten für den ersten Schultag. Self-hosted Webshop: EverShop + Telegram-Shop-Bot als kombinierter Docker-Compose-Stack.">
+<style>
+  :root {
+    --docker: #2496ED;
+    --telegram: #26A5E4;
+    --evershop: #FF6B6B;
+    --portainer: #13BEF9;
+    --bg: #0f1117;
+    --card: #171a23;
+    --text: #e9ecf1;
+    --muted: #9aa3b2;
+    --accent: #7c5cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: radial-gradient(1200px 600px at 20% -10%, #1b2038 0%, var(--bg) 55%),
+                radial-gradient(1000px 500px at 100% 0%, #2a1b3d 0%, var(--bg) 55%);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  header {
+    text-align: center;
+    padding: 56px 20px 40px;
+  }
+  header img.logo {
+    max-width: 320px;
+    width: 70%;
+    height: auto;
+    margin-bottom: 12px;
+    border-radius: 16px;
+  }
+  header h1 {
+    font-size: clamp(1.8rem, 5vw, 3rem);
+    margin: 0 0 8px;
+    background: linear-gradient(90deg, var(--docker), var(--telegram), var(--evershop));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-weight: 800;
+  }
+  header p.tagline {
+    color: var(--muted);
+    font-size: 1.15rem;
+    max-width: 640px;
+    margin: 0 auto 24px;
+  }
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 28px;
+  }
+  .badges img.badge { height: 28px; }
+
+  .cta {
+    display: flex;
+    gap: 14px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 22px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .btn:hover { transform: translateY(-2px); text-decoration: none; }
+  .btn-primary {
+    background: linear-gradient(90deg, var(--docker), var(--telegram));
+    color: #fff;
+    box-shadow: 0 8px 24px -8px rgba(38,165,228,.6);
+  }
+  .btn-secondary {
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid #2a2f3d;
+  }
+
+  main {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 0 20px 80px;
+  }
+
+  section { margin-top: 64px; }
+  section h2 {
+    font-size: 1.6rem;
+    margin-bottom: 8px;
+  }
+  section p.lead {
+    color: var(--muted);
+    margin-top: 0;
+    margin-bottom: 28px;
+    max-width: 700px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 18px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid #232838;
+    border-radius: 14px;
+    padding: 22px;
+  }
+  .card .emoji { font-size: 1.8rem; margin-bottom: 10px; display: block; }
+  .card h3 { margin: 0 0 8px; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+
+  .diagram {
+    background: var(--card);
+    border: 1px solid #232838;
+    border-radius: 14px;
+    padding: 28px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+  .diagram .node {
+    padding: 12px 20px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: #fff;
+    text-align: center;
+    min-width: 220px;
+  }
+  .diagram .arrow { color: var(--muted); font-size: 1.3rem; }
+  .n-db { background: #4169E1; }
+  .n-shop { background: var(--evershop); }
+  .n-bot { background: var(--telegram); }
+  .n-cust { background: #2ecc71; }
+  .diagram .branch {
+    display: flex;
+    gap: 40px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .diagram .branch .col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid #232838;
+  }
+  th, td {
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid #232838;
+    font-size: 0.92rem;
+  }
+  th { background: #1c2030; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  code {
+    background: #1c2030;
+    padding: 2px 6px;
+    border-radius: 5px;
+    font-size: 0.85em;
+    color: #ffd479;
+  }
+
+  pre {
+    background: #0c0e14;
+    border: 1px solid #232838;
+    border-radius: 12px;
+    padding: 20px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    color: #c9d1e0;
+  }
+
+  blockquote {
+    background: var(--card);
+    border-left: 4px solid var(--evershop);
+    border-radius: 8px;
+    margin: 0;
+    padding: 18px 22px;
+    color: var(--text);
+    font-size: 1rem;
+  }
+
+  footer {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--muted);
+    border-top: 1px solid #1e2230;
+    font-size: 0.9rem;
+  }
+  footer a { color: var(--muted); margin: 0 8px; }
+
+  .roadmap-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+  .roadmap-list li {
+    background: var(--card);
+    border: 1px solid #232838;
+    border-radius: 10px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.92rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <img class="logo" src="logo_lldshop.png" alt="LauraLieDesign Logo">
+  <h1>🎒 LauraLieDesign</h1>
+  <p class="tagline">Handgefertigte Stoff-Schultüten mit Herz – jetzt unabhängig vom Marktplatz,<br>
+  betrieben über hAI.LLDesignShop: EverShop 🛒 + Telegram-Shop-Bot 🤖.</p>
+
+  <div class="badges">
+    <img class="badge" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker">
+    <img class="badge" src="https://img.shields.io/badge/Portainer-ready-13BEF9?style=for-the-badge&logo=portainer&logoColor=white" alt="Portainer">
+    <img class="badge" src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
+    <img class="badge" src="https://img.shields.io/badge/EverShop-Commerce-FF6B6B?style=for-the-badge&logo=graphql&logoColor=white" alt="EverShop">
+  </div>
+  <div class="badges">
+    <img class="badge" src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT License">
+    <img class="badge" src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
+    <img class="badge" src="https://img.shields.io/badge/Node.js-TypeScript-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node">
+    <img class="badge" src="https://img.shields.io/badge/PostgreSQL-15-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
+    <img class="badge" src="https://img.shields.io/badge/SQLite-Bot--DB-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite">
+    <img class="badge" src="https://img.shields.io/badge/Status-aktiv-brightgreen?style=flat-square" alt="Status">
+    <img class="badge" src="https://img.shields.io/badge/Katalog-≤50%20Artikel-orange?style=flat-square" alt="Katalog">
+  </div>
+
+  <div class="cta">
+    <a class="btn btn-primary" href="https://github.com/jbkunama1/hAI.LLDesignShop">⭐ Repo auf GitHub</a>
+    <a class="btn btn-secondary" href="https://github.com/jbkunama1/hAI.LLDesignShop#readme">📖 Zur README</a>
+  </div>
+</header>
+
+<main>
+
+  <section>
+    <h2>📖 Über LauraLieDesign</h2>
+    <blockquote>
+      Bei uns dreht sich alles um den schönsten ersten Schultag: handgefertigte Stoff-Schultüten
+      (Zuckertüten) für kleine Schulanfänger:innen – liebevoll genäht, mit viel Liebe zum Detail
+      und in wiederverwendbarer Stoffqualität, die weit über den Einschulungstag hinaus Freude
+      bereitet. Ob mutiger Ninja, funkelndes Einhorn, wilder Dino, starker Superheld oder elegante
+      Wildkatze – jede Schultüte wird einzeln gefertigt und individuell auf die Wünsche eures
+      Kindes abgestimmt. Handgefertigt und versendet aus Deutschland 🇩🇪.
+    </blockquote>
+  </section>
+
+  <section>
+    <h2>🧩 Technische Architektur</h2>
+    <p class="lead">Der Shop läuft komplett selbstgehostet, unabhängig von Etsy & Co., als ein Docker-Compose-Stack.</p>
+    <div class="diagram">
+      <div class="node n-db">🐘 PostgreSQL — evershop_db</div>
+      <div class="arrow">↓</div>
+      <div class="node n-shop">🛒 EverShop — Port 3000 · GraphQL + Admin-UI</div>
+      <div class="arrow">↓ GraphQL Sync (optional)</div>
+      <div class="node n-bot">🤖 Telegram-Bot — aiogram · SQLite</div>
+      <div class="branch">
+        <div class="col">
+          <div class="arrow">↓</div>
+          <div class="node n-cust">💬 Kunden im Telegram-Chat</div>
+        </div>
+        <div class="col">
+          <div class="arrow">↓</div>
+          <div class="node n-cust">🌐 Kunden im Webshop</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>✨ Features</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="emoji">🎒</span>
+        <h3>Handgefertigte Unikate</h3>
+        <p>Jede Stoff-Schultüte wird einzeln genäht – Motive wie Ninja, Einhorn, Dino, Superheld & Wildkatze.</p>
+      </div>
+      <div class="card">
+        <span class="emoji">🤖</span>
+        <h3>Telegram-Shop-Bot</h3>
+        <p>Direktverkauf im Chat mit <code>/shop</code>, <code>/cart</code> und <code>/checkout</code> – eigene SQLite-DB, kein Overhead.</p>
+      </div>
+      <div class="card">
+        <span class="emoji">🛒</span>
+        <h3>EverShop Webshop</h3>
+        <p>GraphQL-API, React-Frontend, PostgreSQL – voller Admin-Bereich für Katalog &amp; Bestellungen.</p>
+      </div>
+      <div class="card">
+        <span class="emoji">🐳</span>
+        <h3>Docker &amp; Portainer</h3>
+        <p>Ein <code>docker-compose.yml</code> für den kompletten Stack, direkt als Portainer-Stack importierbar.</p>
+      </div>
+      <div class="card">
+        <span class="emoji">💳</span>
+        <h3>Zahlungsoptionen</h3>
+        <p>Manuelle Freigabe zum Start, Telegram Payments API (Stripe) für automatisierte Abwicklung vorbereitet.</p>
+      </div>
+      <div class="card">
+        <span class="emoji">🇩🇪</span>
+        <h3>Made in Germany</h3>
+        <p>Handgefertigt und versendet aus Deutschland – persönlicher Service, direkt und ohne Umwege.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>🚀 Schnellstart (für Betreiber)</h2>
+    <pre><code># 1️⃣ Repository klonen
+git clone https://github.com/jbkunama1/hAI.LLDesignShop.git
+cd hAI.LLDesignShop
+
+# 2️⃣ Umgebungsvariablen vorbereiten
+cp .env.example .env
+nano .env
+
+# 3️⃣ Stack starten
+docker compose up -d
+
+# 4️⃣ Logs checken
+docker compose logs -f</code></pre>
+  </section>
+
+  <section>
+    <h2>🔑 Wichtige Variablen</h2>
+    <table>
+      <tr><th>Variable</th><th>Beschreibung</th><th>Woher?</th></tr>
+      <tr><td><code>TELEGRAM_BOT_TOKEN</code></td><td>Token für den Bot</td><td>@BotFather</td></tr>
+      <tr><td><code>TELEGRAM_ADMIN_CHAT_ID</code></td><td>Chat-ID für Bestellbenachrichtigungen</td><td>@userinfobot</td></tr>
+      <tr><td><code>POSTGRES_PASSWORD</code></td><td>DB-Passwort für EverShop</td><td>selbst setzen 🔒</td></tr>
+      <tr><td><code>SESSION_SECRET</code></td><td>Session-Secret für EverShop</td><td>selbst setzen 🔒</td></tr>
+      <tr><td><code>SHOP_CURRENCY</code></td><td>Angezeigte Währung</td><td>Standard: EUR</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>🗺️ Roadmap</h2>
+    <ul class="roadmap-list">
+      <li>🌐 Eigene Domain + <code>cloudflared</code>-Tunnel vor EverShop</li>
+      <li>💳 Telegram Payments API für automatisierte Zahlungsabwicklung</li>
+      <li>🔄 Bestell-Historie &amp; Lagerbestand-Sync zwischen Bot und EverShop</li>
+      <li>💾 Backup-Strategie für Datenbank- und Bot-Volumes</li>
+      <li>📦 Echte Produktdaten aus dem Etsy-Shop übernehmen</li>
+    </ul>
+  </section>
+
+</main>
+
+<footer>
+  Made with ☕ &amp; 🧵 für LauraLieDesign – unabhängig vom Marktplatz<br><br>
+  <a href="https://github.com/jbkunama1/hAI.LLDesignShop">⭐ Repo</a> ·
+  <a href="https://evershop.io/docs">📖 EverShop Docs</a> ·
+  <a href="https://t.me/BotFather">🤖 BotFather</a>
+</footer>
+
+</body>
+</html>
