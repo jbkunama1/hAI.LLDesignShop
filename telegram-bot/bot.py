@@ -24,14 +24,18 @@ Kontaktdaten-Flow:
   - Der Kunde kann sofort durchbestellen, der Admin bekommt eine Benachrichtigung
     mit "Annehmen" / "Ablehnen" - nicht zeitkritisch, dient der Nachbearbeitung.
 
-Zahlungsdaten (neu):
-  - Nach dem Abschluss zeigt der Bot automatisch Ueberweisungsdaten (Kontoinhaber,
-    IBAN, BIC, Verwendungszweck mit Bestellnummer) UND einen PayPal.me-Link mit dem
-    exakten Bestellbetrag an. Konfigurierbar ueber .env (siehe .env.example):
+Zahlungsdaten:
+  - Nach dem Abschluss zeigt der Bot automatisch Ueberweisungsdaten UND einen
+    PayPal.me-Link mit dem exakten Bestellbetrag an. Konfigurierbar ueber .env:
       BANK_HOLDER, BANK_IBAN, BANK_BIC, PAYPAL_ME_USERNAME
-  - Aktuell sind dort Dummy-Werte hinterlegt (Platzhalter-IBAN/PayPal), bis die
-    echten Zahlungsdaten final eingerichtet sind. Stripe/Telegram Payments API
-    ist als naechster Ausbauschritt vorgesehen, siehe README.
+
+Logging (neu):
+  - Ausfuehrliches Startup-Logging: Konfiguration, DB-Status, Telegram-API-Verbindung
+    (Bot-Identitaet via get_me), Admin-Benachrichtigung beim Start.
+  - Laufzeit-Logs fuer wichtige Ereignisse: eingehende Bestellungen, Admin-Annahme/
+    -Ablehnung, Fehler bei Lagerbestand/Checkout.
+  - Log-Level steuerbar ueber .env: LOG_LEVEL (Standard INFO), AIOGRAM_LOG_LEVEL
+    (Standard WARNING, um aiogram-internes Rauschen zu reduzieren).
 """
 
 import asyncio
@@ -70,15 +74,19 @@ from db import (
     MAX_QTY_PER_ITEM,
 )
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("lauraliedesign-bot")
+logging.getLogger("aiogram").setLevel(os.getenv("AIOGRAM_LOG_LEVEL", "WARNING"))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 CURRENCY = os.getenv("CURRENCY", "EUR")
 RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "0.6"))
 
-# --- Zahlungsdaten (aktuell Dummy-Werte, siehe .env.example) ---
 BANK_HOLDER = os.getenv("BANK_HOLDER", "Laura Lienhard")
 BANK_IBAN = os.getenv("BANK_IBAN", "DE00 0000 0000 0000 0000 00")
 BANK_BIC = os.getenv("BANK_BIC", "DUMMYDEFFXXX")
@@ -97,9 +105,6 @@ class CheckoutStates(StatesGroup):
     confirm = State()
 
 
-# ---------------------------------------------------------------------
-# Shop-Texte fuer LauraLieDesign - siehe auch SHOP_TEXTS.md
-# ---------------------------------------------------------------------
 WELCOME_TEXT = (
     "Willkommen bei LauraLieDesign! \U0001F392\u2728\n\n"
     "Handgefertigte Stoff-Schultueten mit viel Liebe zum Detail - fuer den schoensten ersten "
@@ -125,7 +130,6 @@ CONSENT_TEXT = (
 
 
 def build_payment_text(order_number: str, total: float) -> str:
-    """Baut den Zahlungsinformations-Block mit Ueberweisungsdaten und PayPal-Link."""
     paypal_link = f"https://paypal.me/{PAYPAL_ME_USERNAME}/{total:.2f}{CURRENCY}"
     return (
         f"\U0001F4B3 <b>Zahlungsm\u00f6glichkeiten</b>\n\n"
@@ -141,9 +145,6 @@ def build_payment_text(order_number: str, total: float) -> str:
     )
 
 
-# ---------------------------------------------------------------------
-# Anti-Spam / Rate-Limiting Middleware
-# ---------------------------------------------------------------------
 class RateLimitMiddleware(BaseMiddleware):
     def __init__(self, limit_seconds: float = 0.6):
         self.limit_seconds = limit_seconds
@@ -160,6 +161,7 @@ class RateLimitMiddleware(BaseMiddleware):
             now = time.monotonic()
             last = self._last_action.get(user.id, 0)
             if now - last < self.limit_seconds:
+                logger.debug("Rate-Limit ausgeloest fuer User %s", user.id)
                 if isinstance(event, CallbackQuery):
                     await event.answer("Bitte einen Moment warten \u23f3", show_alert=False)
                 return None
@@ -170,9 +172,6 @@ class RateLimitMiddleware(BaseMiddleware):
 _checkout_locks: Dict[int, bool] = {}
 
 
-# ---------------------------------------------------------------------
-# Inline-Menues (Keyboards)
-# ---------------------------------------------------------------------
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -257,9 +256,6 @@ def admin_order_kb(order_number: str) -> InlineKeyboardMarkup:
     )
 
 
-# ---------------------------------------------------------------------
-# Helper: Warenkorb-Text zusammenbauen
-# ---------------------------------------------------------------------
 async def render_cart_text(user_id: int) -> tuple[str, list]:
     items = await get_cart(user_id)
     if not items:
@@ -293,11 +289,9 @@ def render_contact_summary(name: str, email: str, phone, save_consent) -> str:
     )
 
 
-# ---------------------------------------------------------------------
-# /start -> Hauptmenue
-# ---------------------------------------------------------------------
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
+    logger.info("Neuer /start von User %s (@%s)", message.from_user.id, message.from_user.username)
     await state.clear()
     await message.answer(WELCOME_TEXT, reply_markup=main_menu_kb())
 
@@ -309,12 +303,10 @@ async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ---------------------------------------------------------------------
-# Shop-Ansicht
-# ---------------------------------------------------------------------
 async def send_shop(message: Message):
     products = await get_products()
     if not products:
+        logger.warning("Katalog ist leer - keine Produkte mit stock > 0 vorhanden.")
         await message.answer(
             "Der Katalog ist aktuell leer. Bitte sp\u00e4ter erneut versuchen.",
             reply_markup=back_to_menu_kb(),
@@ -344,9 +336,6 @@ async def cb_menu_shop(callback: CallbackQuery):
     await send_shop(callback.message)
 
 
-# ---------------------------------------------------------------------
-# Warenkorb-Ansicht
-# ---------------------------------------------------------------------
 async def show_cart(message: Message, user_id: int, edit: bool = False):
     text, items = await render_cart_text(user_id)
     kb = cart_kb(items)
@@ -378,11 +367,13 @@ async def cb_add_to_cart(callback: CallbackQuery):
     product_id = int(callback.data.split(":")[1])
     product = await get_product(product_id)
     if not product:
+        logger.warning("User %s wollte nicht existierendes Produkt %s hinzufuegen", callback.from_user.id, product_id)
         await callback.answer("Artikel nicht gefunden.", show_alert=True)
         return
 
     new_qty = await add_to_cart(callback.from_user.id, product_id, quantity=1)
     if new_qty == 0:
+        logger.info("Produkt '%s' ausverkauft, User %s konnte nicht hinzufuegen", product.name, callback.from_user.id)
         await callback.answer("Dieser Artikel ist leider ausverkauft \U0001F625", show_alert=True)
     else:
         await callback.answer(f"{product.name} wurde hinzugef\u00fcgt \u2705 ({new_qty}x im Warenkorb)")
@@ -414,22 +405,18 @@ async def cb_cart_clear(callback: CallbackQuery):
     await callback.answer("Warenkorb geleert \U0001F5D1\ufe0f")
 
 
-# ---------------------------------------------------------------------
-# Ueber uns
-# ---------------------------------------------------------------------
 @router.callback_query(F.data == "menu:about")
 async def cb_menu_about(callback: CallbackQuery):
     await callback.message.edit_text(ABOUT_TEXT, reply_markup=back_to_menu_kb(), parse_mode="HTML")
     await callback.answer()
 
 
-# ---------------------------------------------------------------------
-# Checkout: Start -> Lagerpruefung -> Kontaktdaten -> Speicher-Einwilligung -> Bestaetigung
-# ---------------------------------------------------------------------
 async def start_checkout(callback_or_message, user_id: int, state: FSMContext, is_callback: bool):
     try:
         await validate_cart_stock(user_id)
     except InsufficientStockError as exc:
+        logger.info("Checkout abgebrochen fuer User %s: Lagerbestand reicht nicht (%s, verfuegbar: %s)",
+                    user_id, exc.product_name, exc.available)
         text = f"Nur noch {exc.available}x '{exc.product_name}' verf\u00fcgbar. Bitte Menge anpassen."
         if is_callback:
             await callback_or_message.answer(text, show_alert=True)
@@ -442,6 +429,7 @@ async def start_checkout(callback_or_message, user_id: int, state: FSMContext, i
     target_message = callback_or_message.message if is_callback else callback_or_message
 
     if existing_customer:
+        logger.info("Checkout gestartet fuer bekannten Kunden %s (%s)", user_id, existing_customer.email)
         await state.update_data(
             name=existing_customer.name,
             email=existing_customer.email,
@@ -450,6 +438,7 @@ async def start_checkout(callback_or_message, user_id: int, state: FSMContext, i
         )
         await show_checkout_confirm(target_message, user_id, state, edit=is_callback)
     else:
+        logger.info("Checkout gestartet fuer neuen Kunden %s - frage Kontaktdaten ab", user_id)
         await state.set_state(CheckoutStates.waiting_name)
         text = "Bitte gib deinen vollst\u00e4ndigen Namen f\u00fcr die Bestellung ein:"
         if is_callback:
@@ -570,6 +559,7 @@ async def cb_checkout_confirm(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
 
     if _checkout_locks.get(user_id):
+        logger.warning("Doppelklick-Schutz ausgeloest fuer User %s", user_id)
         await callback.answer("Deine Bestellung wird bereits verarbeitet \u23f3", show_alert=True)
         return
     _checkout_locks[user_id] = True
@@ -582,12 +572,14 @@ async def cb_checkout_confirm(callback: CallbackQuery, state: FSMContext):
         save_consent = data.get("save_consent", False)
 
         if not name or not email:
+            logger.error("Checkout fehlgeschlagen fuer User %s: Kontaktdaten unvollstaendig", user_id)
             await callback.answer("Kontaktdaten unvollst\u00e4ndig. Bitte erneut starten.", show_alert=True)
             await state.clear()
             return
 
         if save_consent:
             await save_customer(user_id, name, email, phone)
+            logger.info("Kontaktdaten fuer User %s gespeichert (Consent erteilt)", user_id)
 
         class _CustomerSnapshot:
             pass
@@ -600,6 +592,7 @@ async def cb_checkout_confirm(callback: CallbackQuery, state: FSMContext):
         order = await finalize_order(user_id, snapshot)
 
         if order is None:
+            logger.warning("Bestellung fuer User %s fehlgeschlagen: Lagerbestand reichte beim Abschluss nicht mehr", user_id)
             await callback.answer(
                 "Leider ist ein Artikel aus deinem Warenkorb nicht mehr in ausreichender "
                 "St\u00fcckzahl verf\u00fcgbar. Bitte Warenkorb pr\u00fcfen.",
@@ -608,6 +601,12 @@ async def cb_checkout_confirm(callback: CallbackQuery, state: FSMContext):
             await state.clear()
             await show_cart(callback.message, user_id, edit=True)
             return
+
+        logger.info(
+            "NEUE BESTELLUNG %s | User %s (@%s) | Summe: %.2f %s | Speichern: %s",
+            order["order_number"], user_id, callback.from_user.username or "-",
+            order["total"], CURRENCY, save_consent,
+        )
 
         user = callback.from_user
         phone_line = phone if phone else "nicht angegeben"
@@ -621,11 +620,17 @@ async def cb_checkout_confirm(callback: CallbackQuery, state: FSMContext):
             f"Status: offen \u2013 bitte annehmen oder ablehnen:"
         )
         if ADMIN_CHAT_ID:
-            await callback.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=admin_text,
-                reply_markup=admin_order_kb(order["order_number"]),
-            )
+            try:
+                await callback.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=admin_text,
+                    reply_markup=admin_order_kb(order["order_number"]),
+                )
+                logger.info("Admin-Benachrichtigung fuer Bestellung %s gesendet", order["order_number"])
+            except Exception:
+                logger.exception("FEHLER: Admin-Benachrichtigung fuer Bestellung %s fehlgeschlagen", order["order_number"])
+        else:
+            logger.warning("Keine ADMIN_CHAT_ID gesetzt - Bestellung %s wurde nicht gemeldet!", order["order_number"])
 
         payment_text = build_payment_text(order["order_number"], order["total"])
 
@@ -643,17 +648,15 @@ async def cb_checkout_confirm(callback: CallbackQuery, state: FSMContext):
         _checkout_locks.pop(user_id, None)
 
 
-# ---------------------------------------------------------------------
-# Admin: Bestellung annehmen / ablehnen (nicht zeitkritisch, Kunde hat
-# bereits final bestellt - dient der Nachbearbeitung durch den Shop-Betreiber)
-# ---------------------------------------------------------------------
 @router.callback_query(F.data.startswith("admin:accept:"))
 async def cb_admin_accept(callback: CallbackQuery):
     order_number = callback.data.split(":", 2)[2]
     order = await set_order_status(order_number, "angenommen")
     if not order:
+        logger.warning("Admin-Annahme fehlgeschlagen: Bestellung %s nicht gefunden", order_number)
         await callback.answer("Bestellung nicht gefunden.", show_alert=True)
         return
+    logger.info("Bestellung %s wurde vom Admin ANGENOMMEN", order_number)
     await callback.message.edit_text(
         callback.message.text + f"\n\n\u2705 Angenommen",
     )
@@ -665,31 +668,90 @@ async def cb_admin_reject(callback: CallbackQuery):
     order_number = callback.data.split(":", 2)[2]
     order = await set_order_status(order_number, "abgelehnt")
     if not order:
+        logger.warning("Admin-Ablehnung fehlgeschlagen: Bestellung %s nicht gefunden", order_number)
         await callback.answer("Bestellung nicht gefunden.", show_alert=True)
         return
+    logger.info("Bestellung %s wurde vom Admin ABGELEHNT", order_number)
     await callback.message.edit_text(
         callback.message.text + f"\n\n\u274c Abgelehnt",
     )
     await callback.answer("Bestellung abgelehnt \u274c")
 
 
-# ---------------------------------------------------------------------
-# Start
-# ---------------------------------------------------------------------
 async def main():
+    logger.info("=" * 60)
+    logger.info("hAI.LLDesignShop - Telegram Bot wird gestartet...")
+    logger.info("=" * 60)
+
     if not BOT_TOKEN:
+        logger.error("FEHLER: BOT_TOKEN ist nicht gesetzt. Bitte .env pruefen.")
         raise RuntimeError("BOT_TOKEN ist nicht gesetzt. Bitte .env pruefen.")
 
-    await init_db()
+    logger.info("Konfiguration geladen:")
+    logger.info("  CURRENCY=%s", CURRENCY)
+    logger.info("  RATE_LIMIT_SECONDS=%s", RATE_LIMIT_SECONDS)
+    logger.info("  MAX_QTY_PER_ITEM=%s", MAX_QTY_PER_ITEM)
+    logger.info("  ADMIN_CHAT_ID gesetzt: %s", "ja" if ADMIN_CHAT_ID else "NEIN (keine Admin-Benachrichtigungen!)")
+    logger.info("  BANK_HOLDER=%s", BANK_HOLDER)
+    logger.info("  PAYPAL_ME_USERNAME=%s", PAYPAL_ME_USERNAME)
 
+    logger.info("Initialisiere Datenbank...")
+    try:
+        await init_db()
+        logger.info("Datenbank bereit (SQLite, Tabellen angelegt/geprueft).")
+    except Exception:
+        logger.exception("FEHLER bei der Datenbank-Initialisierung:")
+        raise
+
+    logger.info("Verbinde mit Telegram Bot API...")
     bot = Bot(token=BOT_TOKEN)
+
+    try:
+        me = await bot.get_me()
+        logger.info("Verbindung erfolgreich!")
+        logger.info("  Bot-Username: @%s", me.username)
+        logger.info("  Bot-ID: %s", me.id)
+        logger.info("  Bot-Name: %s", me.first_name)
+        logger.info("  Kann Gruppen beitreten: %s", me.can_join_groups)
+        logger.info("  Liest alle Gruppennachrichten: %s", me.can_read_all_group_messages)
+    except Exception:
+        logger.exception("FEHLER: Verbindung zur Telegram API fehlgeschlagen. BOT_TOKEN pruefen!")
+        raise
+
+    if ADMIN_CHAT_ID:
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text="\U0001F7E2 LauraLieDesign-Bot wurde gestartet und ist bereit.",
+            )
+            logger.info("Start-Benachrichtigung an Admin (Chat-ID %s) gesendet.", ADMIN_CHAT_ID)
+        except Exception:
+            logger.exception(
+                "WARNUNG: Start-Benachrichtigung an Admin fehlgeschlagen. "
+                "Ist ADMIN_CHAT_ID korrekt und hat der Bot dort schon /start bekommen?"
+            )
+    else:
+        logger.warning("Keine ADMIN_CHAT_ID gesetzt - Bestellbenachrichtigungen gehen ins Leere.")
+
     dp = Dispatcher(storage=MemoryStorage())
     dp.message.middleware(RateLimitMiddleware(RATE_LIMIT_SECONDS))
     dp.callback_query.middleware(RateLimitMiddleware(RATE_LIMIT_SECONDS))
     dp.include_router(router)
 
-    logger.info("Bot startet...")
-    await dp.start_polling(bot)
+    logger.info("Registrierte Handler: %d Message-Handler, %d Callback-Handler",
+                len(router.message.handlers), len(router.callback_query.handlers))
+
+    logger.info("-" * 60)
+    logger.info("Bot ist LIVE und wartet auf Nachrichten (Long Polling)...")
+    logger.info("-" * 60)
+
+    try:
+        await dp.start_polling(bot)
+    except Exception:
+        logger.exception("FEHLER waehrend des Polling-Betriebs:")
+        raise
+    finally:
+        logger.info("Bot-Polling beendet.")
 
 
 if __name__ == "__main__":
