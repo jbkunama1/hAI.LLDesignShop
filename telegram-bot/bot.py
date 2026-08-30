@@ -21,14 +21,17 @@ Kontaktdaten-Flow:
     optional eine Telefonnummer (ueberspringbar).
   - Datenschutz: Nach der Eingabe fragt der Bot explizit, ob die Kontaktdaten fuer
     kuenftige Bestellungen gespeichert werden duerfen (DSGVO-Einwilligung).
-    Bei "Nein" werden die Daten nur fuer diese eine Bestellung verwendet und NICHT
-    in der Customer-Tabelle abgelegt - der Kunde muss sie beim naechsten Mal erneut
-    eingeben. Bei "Ja" merkt sich der Bot die Daten fuer naechste Bestellungen.
   - Der Kunde kann sofort durchbestellen, der Admin bekommt eine Benachrichtigung
     mit "Annehmen" / "Ablehnen" - nicht zeitkritisch, dient der Nachbearbeitung.
 
-Fuer Zahlungen: Platzhalter-Flow ueber manuelle Bestaetigung (Ueberweisung/PayPal-Link).
-Fuer Telegram Payments API / Stripe siehe README.md Abschnitt "Zahlungen".
+Zahlungsdaten (neu):
+  - Nach dem Abschluss zeigt der Bot automatisch Ueberweisungsdaten (Kontoinhaber,
+    IBAN, BIC, Verwendungszweck mit Bestellnummer) UND einen PayPal.me-Link mit dem
+    exakten Bestellbetrag an. Konfigurierbar ueber .env (siehe .env.example):
+      BANK_HOLDER, BANK_IBAN, BANK_BIC, PAYPAL_ME_USERNAME
+  - Aktuell sind dort Dummy-Werte hinterlegt (Platzhalter-IBAN/PayPal), bis die
+    echten Zahlungsdaten final eingerichtet sind. Stripe/Telegram Payments API
+    ist als naechster Ausbauschritt vorgesehen, siehe README.
 """
 
 import asyncio
@@ -75,6 +78,12 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 CURRENCY = os.getenv("CURRENCY", "EUR")
 RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "0.6"))
 
+# --- Zahlungsdaten (aktuell Dummy-Werte, siehe .env.example) ---
+BANK_HOLDER = os.getenv("BANK_HOLDER", "Laura Lienhard")
+BANK_IBAN = os.getenv("BANK_IBAN", "DE00 0000 0000 0000 0000 00")
+BANK_BIC = os.getenv("BANK_BIC", "DUMMYDEFFXXX")
+PAYPAL_ME_USERNAME = os.getenv("PAYPAL_ME_USERNAME", "LauraLieDesignDummy")
+
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 router = Router()
@@ -115,6 +124,23 @@ CONSENT_TEXT = (
 )
 
 
+def build_payment_text(order_number: str, total: float) -> str:
+    """Baut den Zahlungsinformations-Block mit Ueberweisungsdaten und PayPal-Link."""
+    paypal_link = f"https://paypal.me/{PAYPAL_ME_USERNAME}/{total:.2f}{CURRENCY}"
+    return (
+        f"\U0001F4B3 <b>Zahlungsm\u00f6glichkeiten</b>\n\n"
+        f"<b>Option A \u2013 \u00dcberweisung</b>\n"
+        f"Kontoinhaber: {BANK_HOLDER}\n"
+        f"IBAN: <code>{BANK_IBAN}</code>\n"
+        f"BIC: <code>{BANK_BIC}</code>\n"
+        f"Verwendungszweck: <code>{order_number}</code>\n\n"
+        f"<b>Option B \u2013 PayPal</b>\n"
+        f"\U0001F449 <a href=\"{paypal_link}\">{total:.2f} {CURRENCY} per PayPal senden</a>\n\n"
+        f"<i>Bitte bei beiden Optionen die Bestellnummer als Verwendungszweck/Notiz angeben, "
+        f"damit wir die Zahlung zuordnen k\u00f6nnen.</i>"
+    )
+
+
 # ---------------------------------------------------------------------
 # Anti-Spam / Rate-Limiting Middleware
 # ---------------------------------------------------------------------
@@ -141,7 +167,6 @@ class RateLimitMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
-# Anti-Doppelklick-Schutz beim Checkout: pro Nutzer nur eine Bestellung gleichzeitig
 _checkout_locks: Dict[int, bool] = {}
 
 
@@ -417,8 +442,6 @@ async def start_checkout(callback_or_message, user_id: int, state: FSMContext, i
     target_message = callback_or_message.message if is_callback else callback_or_message
 
     if existing_customer:
-        # Bekannter Kunde, der frueher der Speicherung zugestimmt hat:
-        # Daten anzeigen und direkt zur Bestaetigung springen.
         await state.update_data(
             name=existing_customer.name,
             email=existing_customer.email,
@@ -604,14 +627,15 @@ async def cb_checkout_confirm(callback: CallbackQuery, state: FSMContext):
                 reply_markup=admin_order_kb(order["order_number"]),
             )
 
+        payment_text = build_payment_text(order["order_number"], order["total"])
+
         await callback.message.edit_text(
             f"Danke f\u00fcr deine Bestellung! \u2705\n\n"
             f"Deine Bestellnummer: <b>{order['order_number']}</b>\n\n"
-            f"Wir melden uns in K\u00fcrze mit den Zahlungsdetails "
-            f"(z.B. PayPal-Link oder \u00dcberweisungsdaten). Bitte gib bei R\u00fcckfragen "
-            f"die Bestellnummer an.",
+            f"{payment_text}",
             reply_markup=back_to_menu_kb(),
             parse_mode="HTML",
+            disable_web_page_preview=True,
         )
         await callback.answer("Bestellung abgeschickt \U0001F389")
         await state.clear()
