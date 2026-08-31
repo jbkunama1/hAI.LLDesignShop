@@ -78,6 +78,8 @@ def kb_product_detail(pid):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📉 Bestand -1", callback_data=f"adm:stock:{pid}:-1"),
          InlineKeyboardButton(text="📈 Bestand +1", callback_data=f"adm:stock:{pid}:1")],
+        [InlineKeyboardButton(text="🏷 Kategorie setzen", callback_data=f"adm:setcat:{pid}")],
+        [InlineKeyboardButton(text="🌟 Empfehlung toggle", callback_data=f"adm:feat:{pid}")],
         [InlineKeyboardButton(text="🚫 Deaktivieren", callback_data=f"adm:toggle:{pid}")],
         [InlineKeyboardButton(text="⬅️ Produkte", callback_data="adm:products:0")],
     ])
@@ -134,6 +136,12 @@ async def on_callback(callback: CallbackQuery):
         await change_stock(q, int(parts[2]), int(parts[3]))
     elif action == "toggle":
         await toggle_product(q, int(parts[2]))
+    elif action == "setcat":
+        await prompt_set_category(q, int(parts[2]))
+    elif action == "setcatval":
+        await set_product_category(q, int(parts[2]), parts[3])
+    elif action == "feat":
+        await toggle_featured(q, int(parts[2]))
     elif action == "orders":
         await show_orders(q, int(parts[2]) if len(parts) > 2 else 0)
     elif action == "order":
@@ -200,6 +208,49 @@ async def toggle_product(q: CallbackQuery, pid: int):
         if "active" in cols:
             conn.execute("UPDATE products SET active = 1 - active WHERE id=?", (pid,))
             conn.commit()
+    conn.close()
+    await show_product_detail(q, pid)
+
+CATEGORIES = ["Schultüte", "Stoff", "Zubehör", "Geschenk", "Sale"]
+
+async def prompt_set_category(q: CallbackQuery, pid: int):
+    buttons = []
+    for cat in CATEGORIES:
+        buttons.append([InlineKeyboardButton(text=f"🏷 {cat}", callback_data=f"adm:setcatval:{pid}:{cat}")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Zurück", callback_data=f"adm:prod:{pid}")])
+    await q.message.edit_text("🏷 Wähle eine Kategorie:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+async def set_product_category(q: CallbackQuery, pid: int, category: str):
+    conn = db()
+    if table_exists(conn, "products"):
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(products)")]
+        if "category" in cols:
+            conn.execute("UPDATE products SET category=? WHERE id=?", (category, pid))
+            conn.commit()
+    conn.close()
+    await q.answer(f"Kategorie gesetzt: {category}")
+    await show_product_detail(q, pid)
+
+async def toggle_featured(q: CallbackQuery, pid: int):
+    conn = db()
+    if table_exists(conn, "products"):
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(products)")]
+        if "featured" in cols:
+            conn.execute("UPDATE products SET featured = 1 - featured WHERE id=?", (pid,))
+            conn.commit()
+            conn.close()
+            await q.answer("Empfehlung aktualisiert")
+            await show_product_detail(q, pid)
+            return
+    # Fallback: add the column if missing
+    try:
+        conn.execute("ALTER TABLE products ADD COLUMN featured INTEGER DEFAULT 0")
+        conn.commit()
+        conn.execute("UPDATE products SET featured = 1 - featured WHERE id=?", (pid,))
+        conn.commit()
+        await q.answer("Empfehlung aktualisiert (Spalte angelegt)")
+    except Exception as e:
+        await q.answer(f"Fehler: {e}")
     conn.close()
     await show_product_detail(q, pid)
 

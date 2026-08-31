@@ -6,6 +6,7 @@ Fuer bis zu 50 Artikel voellig ausreichend, kein separater DB-Server noetig.
 import os
 import random
 import string
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
@@ -30,6 +31,7 @@ class Product(Base):
     price = Column(Float, nullable=False)
     image_url = Column(String, nullable=True)
     stock = Column(Integer, default=0)
+    category = Column(String, default="Allgemein")
 
 
 class CartItem(Base):
@@ -300,3 +302,44 @@ async def set_order_status(order_number: str, status: str) -> Optional[Order]:
             order.status = status
             await session.commit()
         return order
+
+async def get_products_by_category(category: str) -> List[Product]:
+    """Liefert alle Produkte einer Kategorie."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Product).where(Product.category == category)
+        )
+        return result.scalars().all()
+
+async def get_categories() -> List[str]:
+    """Liefert alle eindeutigen Kategorien."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Product.category).distinct()
+        )
+        return [r for r in result.scalars().all() if r]
+
+async def search_products(query: str) -> List[Product]:
+    """Volltextsuche in Name und Beschreibung."""
+    async with async_session() as session:
+        pattern = f"%{query}%"
+        result = await session.execute(
+            select(Product).where(
+                (Product.name.ilike(pattern)) | (Product.description.ilike(pattern))
+            )
+        )
+        return result.scalars().all()
+
+async def get_featured_products(limit: int = 3) -> List[Product]:
+    """Liefert Empfehlungen: zuerst als 'featured' markierte Produkte, sonst Zufall."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Product).where(Product.stock > 0)
+        )
+        all_products = result.scalars().all()
+        # Bevorzuge explizit als featured markierte Produkte
+        featured = [p for p in all_products if getattr(p, 'featured', 0) == 1]
+        if featured:
+            return featured[:limit]
+        random.shuffle(all_products)
+        return all_products[:limit]

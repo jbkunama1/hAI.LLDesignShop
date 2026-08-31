@@ -70,6 +70,10 @@ from db import (
     get_customer,
     save_customer,
     set_order_status,
+    get_products_by_category,
+    get_categories,
+    search_products,
+    get_featured_products,
     InsufficientStockError,
     MAX_QTY_PER_ITEM,
 )
@@ -176,9 +180,18 @@ _checkout_locks: Dict[int, bool] = {}
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="\U0001F6CD\ufe0f Shop ansehen", callback_data="menu:shop")],
-            [InlineKeyboardButton(text="\U0001F9FA Warenkorb", callback_data="menu:cart")],
-            [InlineKeyboardButton(text="\u2139\ufe0f \u00dcber uns", callback_data="menu:about")],
+            [InlineKeyboardButton(text="🛍 Shop nach Kategorie", callback_data="menu:categories")],
+            [InlineKeyboardButton(text="🔍 Suche", callback_data="menu:search")],
+            [InlineKeyboardButton(text="🛒 Warenkorb", callback_data="menu:cart")],
+            [InlineKeyboardButton(text="💬 Hilfe/Kontakt", callback_data="menu:help")],
+            [InlineKeyboardButton(text="ℹ️ Über uns", callback_data="menu:about")],
+        ]
+    )
+
+def featured_products_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌟 Empfehlung des Tages", callback_data="menu:featured")],
         ]
     )
 
@@ -678,6 +691,136 @@ async def cb_admin_reject(callback: CallbackQuery):
     )
     await callback.answer("Bestellung abgelehnt \u274c")
 
+# ── Neue Features: Kategorien, Suche, Empfehlungen, Hilfe ────────────
+
+async def send_categories(message: Message):
+    categories = await get_categories()
+    if not categories:
+        await message.answer("Keine Kategorien verfügbar.", reply_markup=back_to_menu_kb())
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📁 {cat}", callback_data=f"menu:cat:{cat}")] for cat in categories
+    ] + [[InlineKeyboardButton(text="⬅️ Hauptmenü", callback_data="menu:main")]])
+    await message.answer("Wähle eine Kategorie:", reply_markup=kb)
+
+async def send_products_by_category(message: Message, category: str):
+    products = await get_products_by_category(category)
+    if not products:
+        await message.answer(f"Keine Produkte in Kategorie '{category}'.", reply_markup=back_to_menu_kb("menu:categories"))
+        return
+    text = f"📁 <b>Kategorie: {category}</b>\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{p.name} – {p.price:.2f} €", callback_data=f"product:{p.id}")] for p in products
+    ] + [[InlineKeyboardButton(text="⬅️ Kategorien", callback_data="menu:categories")]])
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+async def send_search_prompt(message: Message):
+    await message.answer("🔍 <b>Produktsuche</b>\n\nGib einen Suchbegriff ein (Name oder Beschreibung):", reply_markup=back_to_menu_kb(), parse_mode="HTML")
+
+@router.message(StateFilter(None))
+async def handle_search(message: Message):
+    # Einfache Suchlogik: wenn der User keine bekannte Befehle nutzt, als Suche behandeln
+    text = message.text.strip()
+    if not text.startswith("/") and len(text) > 1:
+        products = await search_products(text)
+        if products:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"{p.name} – {p.price:.2f} €", callback_data=f"product:{p.id}")] for p in products
+            ] + [[InlineKeyboardButton(text="⬅️ Hauptmenü", callback_data="menu:main")]])
+            await message.answer(f"🔍 <b>Suchergebnisse für '{text}':</b>", reply_markup=kb, parse_mode="HTML")
+        else:
+            await message.answer("Keine Produkte gefunden.", reply_markup=back_to_menu_kb())
+        return
+
+async def send_featured(message: Message):
+    products = await get_featured_products(3)
+    if not products:
+        await message.answer("Keine Empfehlungen verfügbar.", reply_markup=back_to_menu_kb())
+        return
+    text = "🌟 <b>Unsere Empfehlungen</b>\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"✨ {p.name} – {p.price:.2f} €", callback_data=f"product:{p.id}")] for p in products
+    ] + [[InlineKeyboardButton(text="⬅️ Hauptmenü", callback_data="menu:main")]])
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+async def send_help(message: Message):
+    HELP_TEXT = (
+        "💬 <b>Hilfe & Kontakt</b>\n\n"
+        "Willkommen bei LauraLieDesign! 🧸\n\n"
+        "<b>Wie bestelle ich?</b>\n"
+        "1. Wähle 'Shop nach Kategorie' oder nutze die 'Suche'\n"
+        "2. Lege Artikel in den Warenkorb 🛒\n"
+        "3. Gehe zur Kasse und gib deine Kontaktdaten an\n"
+        "4. Zahle per Überweisung oder PayPal\n\n"
+        "<b>Kontakt</b>\n"
+        "✉️ E-Mail: laura@laurakreativ.de\n"
+        "📞 Telefon: +49 123 456789\n"
+        "💬 Oder schreibe uns direkt hier im Chat – wir antworten schnell!\n\n"
+        "<b>Datenschutz</b>\n"
+        "Deine Daten werden nur für die Bestellabwicklung genutzt (DSGVO-konform).\n"
+        "Du kannst jederzeit die Löschung beantragen."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📩 Nachricht schreiben", callback_data="menu:contact")],
+        [InlineKeyboardButton(text="⬅️ Hauptmenü", callback_data="menu:main")],
+    ])
+    await message.answer(HELP_TEXT, reply_markup=kb, parse_mode="HTML")
+
+async def send_contact_prompt(message: Message):
+    await message.answer("Schreibe deine Nachricht – wir melden uns zeitnah bei dir! ✍️", reply_markup=back_to_menu_kb())
+
+@router.callback_query(F.data == "menu:categories")
+async def cb_menu_categories(callback: CallbackQuery):
+    await callback.answer()
+    await send_categories(callback.message)
+
+@router.callback_query(F.data.startswith("menu:cat:"))
+async def cb_menu_category(callback: CallbackQuery):
+    await callback.answer()
+    category = callback.data.split(":", 2)[2]
+    await send_products_by_category(callback.message, category)
+
+@router.callback_query(F.data == "menu:search")
+async def cb_menu_search(callback: CallbackQuery):
+    await callback.answer()
+    await send_search_prompt(callback.message)
+
+@router.callback_query(F.data == "menu:featured")
+async def cb_menu_featured(callback: CallbackQuery):
+    await callback.answer()
+    await send_featured(callback.message)
+
+@router.callback_query(F.data == "menu:help")
+async def cb_menu_help(callback: CallbackQuery):
+    await callback.answer()
+    await send_help(callback.message)
+
+@router.callback_query(F.data == "menu:contact")
+async def cb_menu_contact(callback: CallbackQuery):
+    await callback.answer()
+    await send_contact_prompt(callback.message)
+
+# Product detail callback
+@router.callback_query(F.data.startswith("product:"))
+async def cb_product_detail(callback: CallbackQuery):
+    await callback.answer()
+    product_id = int(callback.data.split(":")[1])
+    product = await get_product(product_id)
+    if not product:
+        await callback.message.edit_text("Produkt nicht gefunden.", reply_markup=back_to_menu_kb())
+        return
+    text = (
+        f"📦 <b>{product.name}</b>\n"
+        f"💰 Preis: {product.price:.2f} €\n"
+        f"📦 Bestand: {product.stock}\n"
+        f"📁 Kategorie: {product.category}\n"
+        f"📝 {product.description}"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ In den Warenkorb", callback_data=f"add_to_cart:{product_id}")],
+        [InlineKeyboardButton(text="⬅️ Zurück", callback_data="menu:main")],
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 async def main():
     logger.info("=" * 60)
