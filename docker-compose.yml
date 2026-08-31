@@ -67,7 +67,7 @@ services:
     environment:
       BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID}
-      DATABASE_URL: sqlite:////data/shop.db
+      DATABASE_URL: sqlite+aiosqlite:////data/shop.db
       EVERSHOP_GRAPHQL_URL: http://evershop:3000/graphql
       CURRENCY: ${SHOP_CURRENCY:-EUR}
     volumes:
