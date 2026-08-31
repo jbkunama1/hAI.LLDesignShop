@@ -32,6 +32,7 @@ class Product(Base):
     image_url = Column(String, nullable=True)
     stock = Column(Integer, default=0)
     category = Column(String, default="Allgemein")
+    featured = Column(Integer, default=0)
 
 
 class CartItem(Base):
@@ -83,6 +84,16 @@ class InsufficientStockError(Exception):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Migration: fehlende Spalten nachträglich hinzufügen (für bestehende DBs)
+    async with engine.begin() as conn:
+        # Prüfe ob category Spalte existiert
+        result = await conn.execute("PRAGMA table_info(products)")
+        cols = [row[1] for row in result.fetchall()]
+        if "category" not in cols:
+            await conn.execute('ALTER TABLE products ADD COLUMN category VARCHAR DEFAULT "Allgemein"')
+        if "featured" not in cols:
+            await conn.execute("ALTER TABLE products ADD COLUMN featured INTEGER DEFAULT 0")
 
     async with async_session() as session:
         result = await session.execute(select(Product))
