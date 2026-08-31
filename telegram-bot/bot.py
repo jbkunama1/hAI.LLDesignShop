@@ -73,6 +73,7 @@ from db import (
     InsufficientStockError,
     MAX_QTY_PER_ITEM,
 )
+from admin_menu import register_admin_handlers
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -737,6 +738,7 @@ async def main():
     dp.message.middleware(RateLimitMiddleware(RATE_LIMIT_SECONDS))
     dp.callback_query.middleware(RateLimitMiddleware(RATE_LIMIT_SECONDS))
     dp.include_router(router)
+    register_admin_handlers(dp)
 
     logger.info("Registrierte Handler: %d Message-Handler, %d Callback-Handler",
                 len(router.message.handlers), len(router.callback_query.handlers))

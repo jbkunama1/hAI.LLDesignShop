@@ -1,39 +1,41 @@
 #!/usr/bin/env python3
 """
-Admin-Menue fuer den LLDesignShop Telegram-Bot (python-telegram-bot v20+).
+Admin-Menue fuer den LLDesignShop Telegram-Bot (aiogram v3).
 
 Integration in bot.py:
     from admin_menu import register_admin_handlers
-    register_admin_handlers(app)   # app = Application.builder().token(...).build()
-
-Admin-Zugriff: Umgebungsvariable ADMIN_IDS="123456,789012" (Telegram User-IDs).
+    register_admin_handlers(dp)
 """
 
 import os
 import sqlite3
 from datetime import datetime
+from aiogram import F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
-
+router = Router()
 DB_PATH = os.getenv("BOT_DB_PATH", "./shop.db")
-ADMIN_IDS = {
-    int(x.strip())
-    for x in os.getenv("ADMIN_IDS", "").split(",")
-    if x.strip().isdigit()
-}
 PAGE_SIZE = 5
 
+def get_admin_ids():
+    ids = set()
+    admin_chat = os.getenv("ADMIN_CHAT_ID")
+    if admin_chat and admin_chat.strip().isdigit():
+        ids.add(int(admin_chat.strip()))
+    env_ids = os.getenv("ADMIN_IDS", "")
+    for x in env_ids.split(","):
+        if x.strip().isdigit():
+            ids.add(int(x.strip()))
+    return ids
 
 def is_admin(user_id: int) -> bool:
-    return not ADMIN_IDS or user_id in ADMIN_IDS
-
+    admin_ids = get_admin_ids()
+    return not admin_ids or user_id in admin_ids
 
 def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 def table_exists(conn, name):
     row = conn.execute(
@@ -41,96 +43,89 @@ def table_exists(conn, name):
     ).fetchone()
     return row is not None
 
-
-# ── Tastaturen ──────────────────────────────────────────────
-
 def kb_main():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📦 Produkte", callback_data="adm:products:0")],
-        [InlineKeyboardButton("🧾 Bestellungen", callback_data="adm:orders:0")],
-        [InlineKeyboardButton("📊 Statistik", callback_data="adm:stats")],
-        [InlineKeyboardButton("🔄 Sync starten", callback_data="adm:sync")],
-        [InlineKeyboardButton("❌ Schliessen", callback_data="adm:close")],
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Produkte", callback_data="adm:products:0")],
+        [InlineKeyboardButton(text="🧾 Bestellungen", callback_data="adm:orders:0")],
+        [InlineKeyboardButton(text="📊 Statistik", callback_data="adm:stats")],
+        [InlineKeyboardButton(text="🔄 Sync starten", callback_data="adm:sync")],
+        [InlineKeyboardButton(text="❌ Schliessen", callback_data="adm:close")],
     ])
 
-
 def kb_back(target="adm:main"):
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("⬅️ Zurueck", callback_data=target)]]
-    )
-
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Zurueck", callback_data=target)]
+    ])
 
 def kb_products(page, total, rows):
     buttons = []
     for r in rows:
-        title = (r["name"] or r["sku"])[:28]
+        title = (r["name"] if "name" in r.keys() and r["name"] else r["sku"])[:28]
+        price = r["price"] if "price" in r.keys() else 0.0
         buttons.append([InlineKeyboardButton(
-            f"{title} – {r['price']} EUR", callback_data=f"adm:prod:{r['id']}")])
+            text=f"{title} – {price} EUR", callback_data=f"adm:prod:{r['id']}")])
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"adm:products:{page-1}"))
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"adm:products:{page-1}"))
     if (page + 1) * PAGE_SIZE < total:
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"adm:products:{page+1}"))
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"adm:products:{page+1}"))
     if nav:
         buttons.append(nav)
-    buttons.append([InlineKeyboardButton("⬅️ Hauptmenue", callback_data="adm:main")])
-    return InlineKeyboardMarkup(buttons)
-
+    buttons.append([InlineKeyboardButton(text="⬅️ Hauptmenue", callback_data="adm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def kb_product_detail(pid):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📉 Bestand -1", callback_data=f"adm:stock:{pid}:-1"),
-         InlineKeyboardButton("📈 Bestand +1", callback_data=f"adm:stock:{pid}:1")],
-        [InlineKeyboardButton("🚫 Deaktivieren", callback_data=f"adm:toggle:{pid}")],
-        [InlineKeyboardButton("⬅️ Produkte", callback_data="adm:products:0")],
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📉 Bestand -1", callback_data=f"adm:stock:{pid}:-1"),
+         InlineKeyboardButton(text="📈 Bestand +1", callback_data=f"adm:stock:{pid}:1")],
+        [InlineKeyboardButton(text="🚫 Deaktivieren", callback_data=f"adm:toggle:{pid}")],
+        [InlineKeyboardButton(text="⬅️ Produkte", callback_data="adm:products:0")],
     ])
-
 
 def kb_orders(page, total, rows):
     buttons = []
     for r in rows:
         status = r["status"] if "status" in r.keys() else "offen"
-        label = f"#{r['id']} – {status}"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"adm:order:{r['id']}")])
+        oid = r["id"] if "id" in r.keys() else r["order_number"]
+        label = f"#{oid} – {status}"
+        buttons.append([InlineKeyboardButton(text=label, callback_data=f"adm:order:{r['id']}")])
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"adm:orders:{page-1}"))
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"adm:orders:{page-1}"))
     if (page + 1) * PAGE_SIZE < total:
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"adm:orders:{page+1}"))
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"adm:orders:{page+1}"))
     if nav:
         buttons.append(nav)
-    buttons.append([InlineKeyboardButton("⬅️ Hauptmenue", callback_data="adm:main")])
-    return InlineKeyboardMarkup(buttons)
+    buttons.append([InlineKeyboardButton(text="⬅️ Hauptmenue", callback_data="adm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
-# ── Handler ─────────────────────────────────────────────────
-
-async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ Kein Zugriff.")
+@router.message(F.text == "/admin")
+async def cmd_admin(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Kein Zugriff.")
         return
-    await update.message.reply_text(
+    await message.answer(
         "🛠 *Admin-Menue*\nWaehle einen Bereich:",
         parse_mode="Markdown",
         reply_markup=kb_main(),
     )
 
-
-async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
+@router.callback_query(F.data.startswith("adm:"))
+async def on_callback(callback: CallbackQuery):
+    q = callback
     await q.answer()
     if not is_admin(q.from_user.id):
-        await q.edit_message_text("⛔ Kein Zugriff.")
+        await q.message.edit_text("⛔ Kein Zugriff.")
         return
 
     parts = q.data.split(":")
     action = parts[1] if len(parts) > 1 else "main"
 
     if action == "main":
-        await q.edit_message_text("🛠 *Admin-Menue*", parse_mode="Markdown",
+        await q.message.edit_text("🛠 *Admin-Menue*", parse_mode="Markdown",
                                   reply_markup=kb_main())
     elif action == "close":
-        await q.delete_message()
+        await q.message.delete()
     elif action == "products":
         await show_products(q, int(parts[2]) if len(parts) > 2 else 0)
     elif action == "prod":
@@ -148,14 +143,14 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif action == "stats":
         await show_stats(q)
     elif action == "sync":
-        await run_sync(q, ctx)
+        await run_sync(q)
 
-
-async def show_products(q, page):
+async def show_products(q: CallbackQuery, page: int):
     conn = db()
     if not table_exists(conn, "products"):
-        await q.edit_message_text("Keine Tabelle 'products' gefunden.",
+        await q.message.edit_text("Keine Tabelle 'products' gefunden.",
                                   reply_markup=kb_back())
+        conn.close()
         return
     total = conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"]
     rows = conn.execute(
@@ -163,29 +158,30 @@ async def show_products(q, page):
         (PAGE_SIZE, page * PAGE_SIZE)).fetchall()
     conn.close()
     text = f"📦 *Produkte* ({total} gesamt, Seite {page+1})"
-    await q.edit_message_text(text, parse_mode="Markdown",
+    await q.message.edit_text(text, parse_mode="Markdown",
                               reply_markup=kb_products(page, total, rows))
 
-
-async def show_product_detail(q, pid):
+async def show_product_detail(q: CallbackQuery, pid: int):
     conn = db()
     r = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
     conn.close()
     if not r:
-        await q.edit_message_text("Produkt nicht gefunden.", reply_markup=kb_back("adm:products:0"))
+        await q.message.edit_text("Produkt nicht gefunden.", reply_markup=kb_back("adm:products:0"))
         return
     keys = r.keys()
+    name = r['name'] if 'name' in keys and r['name'] else r['sku']
+    price = r['price'] if 'price' in keys else 0.0
+    qty = r['qty'] if 'qty' in keys else (r['stock'] if 'stock' in keys else 'N/A')
     text = (
-        f"📦 *{r['name'] if 'name' in keys else r['sku']}*\n"
+        f"📦 *{name}*\n"
         f"SKU: `{r['sku']}`\n"
-        f"Preis: {r['price']} EUR\n"
-        + (f"Bestand: {r['qty']}\n" if "qty" in keys else "")
+        f"Preis: {price} EUR\n"
+        f"Bestand: {qty}\n"
     )
-    await q.edit_message_text(text, parse_mode="Markdown",
+    await q.message.edit_text(text, parse_mode="Markdown",
                               reply_markup=kb_product_detail(pid))
 
-
-async def change_stock(q, pid, delta):
+async def change_stock(q: CallbackQuery, pid: int, delta: int):
     conn = db()
     if table_exists(conn, "products"):
         cols = [c[1] for c in conn.execute("PRAGMA table_info(products)")]
@@ -197,8 +193,7 @@ async def change_stock(q, pid, delta):
     conn.close()
     await show_product_detail(q, pid)
 
-
-async def toggle_product(q, pid):
+async def toggle_product(q: CallbackQuery, pid: int):
     conn = db()
     if table_exists(conn, "products"):
         cols = [c[1] for c in conn.execute("PRAGMA table_info(products)")]
@@ -208,44 +203,42 @@ async def toggle_product(q, pid):
     conn.close()
     await show_product_detail(q, pid)
 
-
-async def show_orders(q, page):
+async def show_orders(q: CallbackQuery, page: int):
     conn = db()
     if not table_exists(conn, "orders"):
-        await q.edit_message_text("Keine Tabelle 'orders' gefunden.",
+        await q.message.edit_text("Keine Tabelle 'orders' gefunden.",
                                   reply_markup=kb_back())
+        conn.close()
         return
     total = conn.execute("SELECT COUNT(*) c FROM orders").fetchone()["c"]
     rows = conn.execute(
         "SELECT * FROM orders ORDER BY id DESC LIMIT ? OFFSET ?",
         (PAGE_SIZE, page * PAGE_SIZE)).fetchall()
     conn.close()
-    await q.edit_message_text(
+    await q.message.edit_text(
         f"🧾 *Bestellungen* ({total} gesamt)", parse_mode="Markdown",
         reply_markup=kb_orders(page, total, rows))
 
-
-async def show_order_detail(q, oid):
+async def show_order_detail(q: CallbackQuery, oid: int):
     conn = db()
     r = conn.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     conn.close()
     if not r:
-        await q.edit_message_text("Bestellung nicht gefunden.",
+        await q.message.edit_text("Bestellung nicht gefunden.",
                                   reply_markup=kb_back("adm:orders:0"))
         return
     lines = [f"🧾 *Bestellung #{r['id']}*"]
     for k in r.keys():
         if k != "id":
             lines.append(f"{k}: {r[k]}")
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Als erledigt markieren",
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Als erledigt markieren",
                               callback_data=f"adm:orderdone:{oid}")],
-        [InlineKeyboardButton("⬅️ Bestellungen", callback_data="adm:orders:0")],
+        [InlineKeyboardButton(text="⬅️ Bestellungen", callback_data="adm:orders:0")],
     ])
-    await q.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
+    await q.message.edit_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
 
-
-async def set_order_status(q, oid, status):
+async def set_order_status(q: CallbackQuery, oid: int, status: str):
     conn = db()
     if table_exists(conn, "orders"):
         cols = [c[1] for c in conn.execute("PRAGMA table_info(orders)")]
@@ -255,8 +248,7 @@ async def set_order_status(q, oid, status):
     conn.close()
     await show_order_detail(q, oid)
 
-
-async def show_stats(q):
+async def show_stats(q: CallbackQuery):
     conn = db()
     products = orders = 0
     if table_exists(conn, "products"):
@@ -270,23 +262,20 @@ async def show_stats(q):
         f"Bestellungen: {orders}\n"
         f"Stand: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
-    await q.edit_message_text(text, parse_mode="Markdown", reply_markup=kb_back())
+    await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb_back())
 
-
-async def run_sync(q, ctx):
-    await q.edit_message_text("🔄 Sync laeuft...", reply_markup=kb_back())
+async def run_sync(q: CallbackQuery):
+    await q.message.edit_text("🔄 Sync laeuft...", reply_markup=kb_back())
     import subprocess as sp
     try:
         r = sp.run(["python3", "sync_evershop.py"], capture_output=True,
                    text=True, timeout=120,
                    cwd=os.path.dirname(os.path.abspath(__file__)))
         out = (r.stdout or r.stderr or "kein Output")[-800:]
-        await q.message.reply_text(f"Sync fertig:\n```\n{out}\n```",
-                                   parse_mode="Markdown")
+        await q.message.answer(f"Sync fertig:\n```\n{out}\n```",
+                               parse_mode="Markdown")
     except Exception as e:
-        await q.message.reply_text(f"Sync-Fehler: {e}")
+        await q.message.answer(f"Sync-Fehler: {e}")
 
-
-def register_admin_handlers(app):
-    app.add_handler(CommandHandler("admin", cmd_admin))
-    app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^adm:"))
+def register_admin_handlers(dp):
+    dp.include_router(router)
