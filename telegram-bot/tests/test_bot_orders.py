@@ -15,7 +15,7 @@ test_db = os.path.join(tempfile.gettempdir(), "test_shop.db")
 TEST_DB_URL = f"sqlite+aiosqlite:///{test_db}"
 os.environ["DATABASE_URL"] = TEST_DB_URL
 
-from db import Base, Product, CartItem, Customer, Order, add_to_cart, get_cart, validate_cart_stock, finalize_order, clear_cart, save_customer, get_customer, InsufficientStockError
+from db import Base, Product, CartItem, Customer, Order, add_to_cart, get_cart, validate_cart_stock, finalize_order, clear_cart, save_customer, get_customer, InsufficientStockError, get_products_by_category, get_categories, search_products, get_featured_products
 
 @pytest_asyncio.fixture
 async def patched_db():
@@ -114,6 +114,52 @@ class TestOrderFlow:
         await finalize_order(user_id, customer)
         updated = await get_product(product.id)
         assert updated.stock == original_stock - 1
+
+class TestCategoriesSearchFeatured:
+    @pytest.mark.asyncio
+    async def test_get_categories(self, seeded_db):
+        cats = await get_categories()
+        assert isinstance(cats, list)
+
+    @pytest.mark.asyncio
+    async def test_get_products_by_category(self, seeded_db):
+        product = seeded_db[0]
+        category = product.category
+        results = await get_products_by_category(category)
+        assert len(results) >= 1
+        assert all(p.category == category for p in results)
+
+    @pytest.mark.asyncio
+    async def test_get_products_by_category_nonexistent(self, seeded_db):
+        results = await get_products_by_category("NichtExistent123")
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_search_products_by_name(self, seeded_db):
+        results = await search_products("Schultute")
+        assert len(results) >= 1
+
+    @pytest.mark.asyncio
+    async def test_search_products_case_insensitive(self, seeded_db):
+        results = await search_products("schultute")
+        assert len(results) >= 1
+
+    @pytest.mark.asyncio
+    async def test_search_products_no_match(self, seeded_db):
+        results = await search_products("XYZABC123")
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_get_featured_products(self, seeded_db):
+        results = await get_featured_products(limit=2)
+        assert len(results) <= 2
+        assert all(p.stock > 0 for p in results)
+
+    @pytest.mark.asyncio
+    async def test_featured_products_respect_limit(self, seeded_db):
+        results = await get_featured_products(limit=1)
+        assert len(results) <= 1
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
