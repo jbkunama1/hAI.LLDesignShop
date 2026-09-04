@@ -197,10 +197,12 @@ def featured_products_kb() -> InlineKeyboardMarkup:
 
 
 def back_to_menu_kb() -> InlineKeyboardMarkup:
+    # Fügt die Empfehlung unter die Zurück-Taste ein
+    featured = featured_products_kb().inline_keyboard
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="\u2b05\ufe0f Zur\u00fcck zum Men\u00fc", callback_data="menu:main")]
-        ]
+        ] + featured
     )
 
 
@@ -307,13 +309,25 @@ def render_contact_summary(name: str, email: str, phone, save_consent) -> str:
 async def cmd_start(message: Message, state: FSMContext):
     logger.info("Neuer /start von User %s (@%s)", message.from_user.id, message.from_user.username)
     await state.clear()
-    await message.answer(WELCOME_TEXT, reply_markup=main_menu_kb())
+    kb = main_menu_kb()
+    # Werbung / Empfehlungen im Startmenue
+    featured = await get_featured_products(1)
+    if featured:
+        f = featured[0]
+        kb.inline_keyboard.append([InlineKeyboardButton(text=f"🌟 Tipp: {f.name} ({f.price:.2f} {CURRENCY})", callback_data=f"menu:featured")])
+    await message.answer(WELCOME_TEXT, reply_markup=kb)
 
 
 @router.callback_query(F.data == "menu:main")
 async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text(WELCOME_TEXT, reply_markup=main_menu_kb())
+    kb = main_menu_kb()
+    # Werbung / Empfehlungen im Startmenue
+    featured = await get_featured_products(1)
+    if featured:
+        f = featured[0]
+        kb.inline_keyboard.append([InlineKeyboardButton(text=f"🌟 Tipp: {f.name} ({f.price:.2f} {CURRENCY})", callback_data=f"menu:featured")])
+    await callback.message.edit_text(WELCOME_TEXT, reply_markup=kb)
     await callback.answer()
 
 
@@ -322,7 +336,7 @@ async def send_shop(message: Message):
     if not products:
         logger.warning("Katalog ist leer - keine Produkte mit stock > 0 vorhanden.")
         await message.answer(
-            "Der Katalog ist aktuell leer. Bitte sp\u00e4ter erneut versuchen.",
+            "Der Katalog ist aktuell leer. Bitte später erneut versuchen.",
             reply_markup=back_to_menu_kb(),
         )
         return
@@ -335,7 +349,13 @@ async def send_shop(message: Message):
         else:
             await message.answer(caption, reply_markup=kb, parse_mode="HTML")
 
-    await message.answer("Fertig gest\u00f6bert?", reply_markup=back_to_menu_kb())
+    # Werbung / Empfehlungen unter den Produkten
+    featured = await get_featured_products(2)
+    if featured:
+        ad_text = "💡 <b>Empfehlung der Woche (Werbung):</b>\n" + "\n".join([f"• {f.name} – <i>{f.price:.2f} {CURRENCY}</i>" for f in featured])
+        await message.answer(ad_text, parse_mode="HTML")
+
+    await message.answer("Fertig gestöbert?", reply_markup=back_to_menu_kb())
 
 
 @router.message(Command("shop"))
@@ -817,9 +837,9 @@ async def cb_product_detail(callback: CallbackQuery):
         f"📝 {product.description}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ In den Warenkorb", callback_data=f"add_to_cart:{product_id}")],
+        [InlineKeyboardButton(text="➕ In den Warenkorb", callback_data=f"add:{product_id}")],
         [InlineKeyboardButton(text="⬅️ Zurück", callback_data="menu:main")],
-    ])
+    ] + featured_products_kb().inline_keyboard)
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 async def main():
