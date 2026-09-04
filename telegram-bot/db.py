@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, select
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, select, text
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////data/shop.db")
 MAX_QTY_PER_ITEM = int(os.getenv("MAX_QTY_PER_ITEM", "5"))
@@ -88,12 +88,12 @@ async def init_db():
     # Migration: fehlende Spalten nachträglich hinzufügen (für bestehende DBs)
     async with engine.begin() as conn:
         # Prüfe ob category Spalte existiert
-        result = await conn.execute("PRAGMA table_info(products)")
+        result = await conn.execute(text("PRAGMA table_info(products)"))
         cols = [row[1] for row in result.fetchall()]
         if "category" not in cols:
-            await conn.execute('ALTER TABLE products ADD COLUMN category VARCHAR DEFAULT "Allgemein"')
+            await conn.execute(text('ALTER TABLE products ADD COLUMN category VARCHAR DEFAULT "Allgemein"'))
         if "featured" not in cols:
-            await conn.execute("ALTER TABLE products ADD COLUMN featured INTEGER DEFAULT 0")
+            await conn.execute(text("ALTER TABLE products ADD COLUMN featured INTEGER DEFAULT 0"))
 
     async with async_session() as session:
         result = await session.execute(select(Product))
