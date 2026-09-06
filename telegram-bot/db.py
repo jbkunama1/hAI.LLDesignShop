@@ -98,11 +98,13 @@ async def init_db():
     async with async_session() as session:
         result = await session.execute(select(Product))
         if not result.scalars().first():
-            demo_products = [
-                Product(name="Stoff-Schultuete Ninja", description="Beige mit Bausteinen-Motiv", price=34.90, stock=5),
-                Product(name="Stoff-Schultuete Einhorn", description="Pinke Sterne, funkelnd", price=34.90, stock=5),
-                Product(name="Stoff-Schultuete Dino", description="Mit Kopfhoerern, kindgerecht", price=34.90, stock=5),
-            ]
+            # Import Etsy test products automatically on empty DB
+            import sys
+            import os
+            sys.path.append(os.path.dirname(__file__))
+            from seed_test_products import TEST_PRODUCTS
+            
+            demo_products = [Product(**p) for p in TEST_PRODUCTS]
             session.add_all(demo_products)
             await session.commit()
 
